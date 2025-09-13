@@ -186,7 +186,10 @@ export function DiagramPreview({
             panning={{ disabled: false }}
             limitToBounds={false}
           >
-            <TransformComponent wrapperClass='!h-full !w-full' contentClass='!h-full !w-full'>
+            <TransformComponent
+              wrapperClass='!h-full !w-full'
+              contentClass='!h-full !w-full'
+            >
               <div className='relative w-full h-full'>
                 <div
                   ref={fullscreenContainerRef}

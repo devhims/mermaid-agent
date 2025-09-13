@@ -182,12 +182,14 @@ export default function Home() {
 
   function zoomIn() {
     if (zoomPanRef.current) {
-      zoomPanRef.current.zoomIn(1.2);
+      // Use a smaller step with animation for smoother zoom
+      zoomPanRef.current.zoomIn(0.3, 260, 'easeOut');
     }
   }
   function zoomOut() {
     if (zoomPanRef.current) {
-      zoomPanRef.current.zoomOut(0.8);
+      // Match zoom-in smoothness for consistency
+      zoomPanRef.current.zoomOut(0.3, 260, 'easeOut');
     }
   }
   function resetView() {
