@@ -186,16 +186,16 @@ export function DiagramPreview({
         inst.smoothZoom(cx, cy, 0.8);
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        inst.moveBy(-step, 0);
+        inst.moveBy(-step, 0, false);
       } else if (e.key === 'ArrowRight') {
         e.preventDefault();
-        inst.moveBy(step, 0);
+        inst.moveBy(step, 0, false);
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        inst.moveBy(0, -step);
+        inst.moveBy(0, -step, false);
       } else if (e.key === 'ArrowDown') {
         e.preventDefault();
-        inst.moveBy(0, step);
+        inst.moveBy(0, step, false);
       }
     };
     const onWheel = (e: WheelEvent) => {
@@ -206,7 +206,7 @@ export function DiagramPreview({
     dst.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       window.removeEventListener('keydown', onKey);
-      dst.removeEventListener('wheel', onWheel as any);
+      dst.removeEventListener('wheel', onWheel as EventListener);
       document.body.style.overflow = prevOverflow;
       if (fullscreenPanzoomRef.current) {
         fullscreenPanzoomRef.current.dispose();
@@ -248,14 +248,31 @@ export function DiagramPreview({
         <div className='flex items-center gap-3'>
           {/* Zoom Controls */}
           <div className='flex items-center gap-1'>
-            <Button variant='ghost' size='default' onClick={onZoomOut} className='h-10 w-10 p-0 cursor-pointer'>
+            <Button
+              variant='ghost'
+              size='default'
+              onClick={onZoomOut}
+              className='h-10 w-10 p-0 cursor-pointer'
+            >
               <ZoomOut className='h-4 w-4' />
             </Button>
-            <Button variant='ghost' size='default' onClick={onZoomIn} className='h-10 w-10 p-0 cursor-pointer'>
+            <Button
+              variant='ghost'
+              size='default'
+              onClick={onZoomIn}
+              className='h-10 w-10 p-0 cursor-pointer'
+            >
               <ZoomIn className='h-4 w-4' />
             </Button>
 
-            <Button variant='ghost' size='default' onClick={onResetView} className='h-10 w-10 p-0 cursor-pointer' aria-label='Reset view' title='Reset view'>
+            <Button
+              variant='ghost'
+              size='default'
+              onClick={onResetView}
+              className='h-10 w-10 p-0 cursor-pointer'
+              aria-label='Reset view'
+              title='Reset view'
+            >
               <RotateCcw className='h-4 w-4' />
             </Button>
 

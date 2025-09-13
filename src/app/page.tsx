@@ -77,8 +77,10 @@ export default function Home() {
       if (!containerRef.current) {
         for (let i = 0; i < 10 && !containerRef.current; i++) {
           // wait up to ~10 frames (~160ms) for mount
-          // eslint-disable-next-line no-await-in-loop
-          await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+          await new Promise((resolve) =>
+            requestAnimationFrame(() => resolve(undefined))
+          );
         }
         if (!containerRef.current) return; // still not ready
       }
@@ -120,9 +122,12 @@ export default function Home() {
         });
 
         // Ensure fonts are loaded so Mermaid measures text correctly
-        if ((document as any).fonts?.ready) {
+        const fonts = (
+          document as Document & { fonts?: { ready?: Promise<unknown> } }
+        ).fonts;
+        if (fonts?.ready) {
           try {
-            await (document as any).fonts.ready;
+            await fonts.ready;
           } catch {}
         }
 
@@ -155,7 +160,9 @@ export default function Home() {
 
         // Immediately perform a second render on the next frame to
         // normalize layout with finalized CSS/metrics.
-        await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => resolve(undefined))
+        );
         if (!cancelled) {
           const { svg: svg2 } = await renderWithFallback(prepared);
           if (!cancelled && containerRef.current) {
@@ -188,7 +195,7 @@ export default function Home() {
     render();
     return () => {
       cancelled = true;
-      if (el) el.removeEventListener('mousemove', onMove as any);
+      if (el) el.removeEventListener('mousemove', onMove as EventListener);
     };
   }, [debouncedCode, resolvedTheme]);
 
