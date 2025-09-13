@@ -1,7 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import panzoom from 'panzoom';
+import {
+  TransformWrapper,
+  TransformComponent,
+  ReactZoomPanPinchRef,
+} from 'react-zoom-pan-pinch';
 import { Download, ZoomIn, ZoomOut, RotateCcw, Maximize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -25,6 +29,7 @@ interface DiagramPreviewProps {
   onZoomOut: () => void;
   onResetView: () => void;
   onFitToView: () => void;
+  zoomPanRef: React.RefObject<ReactZoomPanPinchRef | null>;
 }
 
 export function DiagramPreview({
@@ -38,6 +43,7 @@ export function DiagramPreview({
   onZoomOut,
   onResetView,
   onFitToView,
+  zoomPanRef,
 }: DiagramPreviewProps) {
   const [isDownloadDialogOpen, setIsDownloadDialogOpen] = useState(false);
   const [lightPreview, setLightPreview] = useState<string | null>(null);
@@ -47,7 +53,6 @@ export function DiagramPreview({
   );
   const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
-  const fullscreenPanzoomRef = useRef<ReturnType<typeof panzoom> | null>(null);
 
   function getCurrentSvg(): SVGSVGElement | null {
     return containerRef.current?.querySelector('svg') ?? null;
@@ -147,71 +152,22 @@ export function DiagramPreview({
 
     // Fill overlay with current diagram markup
     dst.innerHTML = src.innerHTML || '';
-    const svg = dst.querySelector('svg') as SVGSVGElement | null;
-    if (svg) {
-      // init panzoom
-      if (fullscreenPanzoomRef.current) {
-        fullscreenPanzoomRef.current.dispose();
-        fullscreenPanzoomRef.current = null;
-      }
-      fullscreenPanzoomRef.current = panzoom(svg, {
-        maxZoom: 10,
-        minZoom: 0.1,
-        bounds: false,
-        zoomDoubleClickSpeed: 1,
-      });
-    }
 
-    // Prevent background scroll and add keyboard controls
+    // Prevent background scroll
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
     const onKey = (e: KeyboardEvent) => {
-      const inst = fullscreenPanzoomRef.current;
-      if (!inst) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         setIsFullscreen(false);
         return;
       }
-      const rect = (dst as HTMLDivElement).getBoundingClientRect();
-      const cx = rect.width / 2;
-      const cy = rect.height / 2;
-      const step = 80;
-      if (e.key === '+' || e.key === '=') {
-        e.preventDefault();
-        inst.smoothZoom(cx, cy, 1.2);
-      } else if (e.key === '-' || e.key === '_') {
-        e.preventDefault();
-        inst.smoothZoom(cx, cy, 0.8);
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        inst.moveBy(-step, 0, false);
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        inst.moveBy(step, 0, false);
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        inst.moveBy(0, -step, false);
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        inst.moveBy(0, step, false);
-      }
-    };
-    const onWheel = (e: WheelEvent) => {
-      // Prevent page scroll while zooming/panning overlay
-      e.preventDefault();
     };
     window.addEventListener('keydown', onKey);
-    dst.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       window.removeEventListener('keydown', onKey);
-      dst.removeEventListener('wheel', onWheel as EventListener);
       document.body.style.overflow = prevOverflow;
-      if (fullscreenPanzoomRef.current) {
-        fullscreenPanzoomRef.current.dispose();
-        fullscreenPanzoomRef.current = null;
-      }
     };
   }, [isFullscreen, containerRef]);
 
@@ -219,10 +175,27 @@ export function DiagramPreview({
     <div className='flex flex-col h-full'>
       {isFullscreen && (
         <div className='fixed inset-0 z-50 bg-background/95 backdrop-blur-sm'>
-          <div
-            ref={fullscreenContainerRef}
-            className='absolute inset-0 overflow-hidden diagram-grid-bg grid place-items-center'
-          />
+          <TransformWrapper
+            initialScale={1}
+            minScale={0.1}
+            maxScale={10}
+            centerOnInit={false}
+            wheel={{ step: 0.1 }}
+            pinch={{ disabled: false }}
+            doubleClick={{ disabled: false }}
+            panning={{ disabled: false }}
+            limitToBounds={false}
+          >
+            <TransformComponent
+              wrapperClass='!absolute inset-0 overflow-hidden diagram-grid-bg'
+              contentClass='!h-full !w-full flex items-center justify-center'
+            >
+              <div
+                ref={fullscreenContainerRef}
+                className='[&_svg]:block [&_svg]:max-w-none [&_svg]:h-auto [&_svg]:overflow-visible [&_svg]:drop-shadow-lg'
+              />
+            </TransformComponent>
+          </TransformWrapper>
           <div className='absolute top-2 right-3 text-xs text-muted-foreground select-none'>
             Press Esc to exit
           </div>
@@ -445,10 +418,28 @@ export function DiagramPreview({
             </div>
           </div>
         ) : (
-          <div
-            ref={containerRef}
-            className='absolute inset-4 overflow-auto z-10 grid place-items-center [&_svg]:block [&_svg]:max-w-none [&_svg]:h-auto [&_svg]:overflow-visible [&_svg]:drop-shadow-lg'
-          />
+          <TransformWrapper
+            ref={zoomPanRef}
+            initialScale={1}
+            minScale={0.1}
+            maxScale={10}
+            centerOnInit={false}
+            wheel={{ step: 0.1 }}
+            pinch={{ disabled: false }}
+            doubleClick={{ disabled: false }}
+            panning={{ disabled: false }}
+            limitToBounds={false}
+          >
+            <TransformComponent
+              wrapperClass='!h-full !w-full'
+              contentClass='!h-full !w-full'
+            >
+              <div
+                ref={containerRef}
+                className='absolute inset-0 flex items-center justify-center [&_svg]:block [&_svg]:max-w-none [&_svg]:h-auto [&_svg]:overflow-visible [&_svg]:drop-shadow-lg'
+              />
+            </TransformComponent>
+          </TransformWrapper>
         )}
       </div>
     </div>

@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import mermaid from 'mermaid';
-import panzoom from 'panzoom';
 import { useTheme } from 'next-themes';
+import { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { CodeEditor } from '@/components/code-editor';
 import { DiagramPreview } from '@/components/diagram-preview';
@@ -12,7 +12,6 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
 const DEFAULT_CODE = `%% Mermaid Viewer — sample
@@ -38,7 +37,7 @@ export default function Home() {
 
   const { resolvedTheme } = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const panzoomRef = useRef<ReturnType<typeof panzoom> | null>(null);
+  const zoomPanRef = useRef<ReactZoomPanPinchRef | null>(null);
   const lastPointerRef = useRef<{ x: number; y: number; has: boolean }>({
     x: 0,
     y: 0,
@@ -52,7 +51,7 @@ export default function Home() {
     if (error) {
       setError(null);
     }
-  }, [code]);
+  }, [code, error]);
 
   useEffect(() => {
     mermaid.initialize({
@@ -136,26 +135,9 @@ export default function Home() {
 
         if (cancelled) return;
 
-        const applyPanzoom = () => {
-          const svgEl = containerRef.current?.querySelector('svg');
-          if (!svgEl) return;
-          if (panzoomRef.current) {
-            panzoomRef.current.dispose();
-            panzoomRef.current = null;
-          }
-          const instance = panzoom(svgEl as SVGSVGElement, {
-            maxZoom: 10,
-            minZoom: 0.1,
-            bounds: false,
-            zoomDoubleClickSpeed: 1,
-          });
-          panzoomRef.current = instance;
-        };
-
         // First insert
         if (containerRef.current) {
           containerRef.current.innerHTML = svg;
-          applyPanzoom();
         }
 
         // Immediately perform a second render on the next frame to
@@ -167,7 +149,6 @@ export default function Home() {
           const { svg: svg2 } = await renderWithFallback(prepared);
           if (!cancelled && containerRef.current) {
             containerRef.current.innerHTML = svg2;
-            applyPanzoom();
           }
         }
 
@@ -200,43 +181,36 @@ export default function Home() {
   }, [debouncedCode, resolvedTheme]);
 
   function zoomIn() {
-    const inst = panzoomRef.current;
-    const svg = getSvgElement();
-    if (!inst || !svg) return;
-    const rect = svg.getBoundingClientRect();
-    const lp = lastPointerRef.current;
-    const x = lp.has ? lp.x - rect.left : rect.width / 2;
-    const y = lp.has ? lp.y - rect.top : rect.height / 2;
-    inst.smoothZoom(x, y, 1.2);
+    if (zoomPanRef.current) {
+      zoomPanRef.current.zoomIn(1.2);
+    }
   }
   function zoomOut() {
-    const inst = panzoomRef.current;
-    const svg = getSvgElement();
-    if (!inst || !svg) return;
-    const rect = svg.getBoundingClientRect();
-    const lp = lastPointerRef.current;
-    const x = lp.has ? lp.x - rect.left : rect.width / 2;
-    const y = lp.has ? lp.y - rect.top : rect.height / 2;
-    inst.smoothZoom(x, y, 0.8);
+    if (zoomPanRef.current) {
+      zoomPanRef.current.zoomOut(0.8);
+    }
   }
   function resetView() {
-    const inst = panzoomRef.current;
-    if (!inst) return;
-    inst.moveTo(0, 0);
-    inst.zoomAbs(0, 0, 1);
+    if (zoomPanRef.current) {
+      zoomPanRef.current.resetTransform();
+    }
   }
   function fitToView() {
-    const inst = panzoomRef.current;
-    const svg = getSvgElement();
-    const container = containerRef.current;
-    if (!inst || !svg || !container) return;
-    const bbox = svg.getBBox();
-    const pad = 16;
-    const cw = container.clientWidth - pad * 2;
-    const ch = container.clientHeight - pad * 2;
-    const scale = Math.max(0.1, Math.min(cw / bbox.width, ch / bbox.height));
-    inst.zoomAbs(0, 0, scale);
-    inst.moveTo(pad - bbox.x * scale, pad - bbox.y * scale);
+    if (zoomPanRef.current) {
+      const svg = getSvgElement();
+      const container = containerRef.current;
+      if (!svg || !container) return;
+      const bbox = svg.getBBox();
+      const pad = 16;
+      const cw = container.clientWidth - pad * 2;
+      const ch = container.clientHeight - pad * 2;
+      const scale = Math.max(0.1, Math.min(cw / bbox.width, ch / bbox.height));
+      zoomPanRef.current.setTransform(
+        pad - bbox.x * scale,
+        pad - bbox.y * scale,
+        scale
+      );
+    }
   }
 
   async function handleFixWithAI() {
@@ -275,25 +249,6 @@ export default function Home() {
   function getSvgElement(): SVGSVGElement | null {
     const svg = containerRef.current?.querySelector('svg');
     return (svg as SVGSVGElement) || null;
-  }
-
-  function parseSvgSize(svg: SVGSVGElement): { width: number; height: number } {
-    const wAttr = svg.getAttribute('width');
-    const hAttr = svg.getAttribute('height');
-    if (wAttr && hAttr) {
-      const w = parseFloat(wAttr);
-      const h = parseFloat(hAttr);
-      if (!Number.isNaN(w) && !Number.isNaN(h)) return { width: w, height: h };
-    }
-    const vb = svg.getAttribute('viewBox');
-    if (vb) {
-      const parts = vb.split(/\s+/).map(Number);
-      if (parts.length === 4) {
-        return { width: parts[2], height: parts[3] };
-      }
-    }
-    // Fallback
-    return { width: 800, height: 600 };
   }
 
   function downloadPng(bg: 'light' | 'dark' | 'transparent') {
@@ -468,20 +423,19 @@ export default function Home() {
 
           {/* Preview Panel */}
           <ResizablePanel defaultSize={editorCollapsed ? 100 : 70} minSize={50}>
-            <div className='h-full'>
-              <DiagramPreview
-                error={error}
-                containerRef={containerRef}
-                isRendering={isRendering}
-                onDownloadLight={() => downloadPng('light')}
-                onDownloadDark={() => downloadPng('dark')}
-                onDownloadTransparent={() => downloadPng('transparent')}
-                onZoomIn={zoomIn}
-                onZoomOut={zoomOut}
-                onResetView={resetView}
-                onFitToView={fitToView}
-              />
-            </div>
+            <DiagramPreview
+              error={error}
+              containerRef={containerRef}
+              isRendering={isRendering}
+              onDownloadLight={() => downloadPng('light')}
+              onDownloadDark={() => downloadPng('dark')}
+              onDownloadTransparent={() => downloadPng('transparent')}
+              onZoomIn={zoomIn}
+              onZoomOut={zoomOut}
+              onResetView={resetView}
+              onFitToView={fitToView}
+              zoomPanRef={zoomPanRef}
+            />
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
@@ -549,7 +503,7 @@ async function renderWithFallback(code: string): Promise<{ svg: string }> {
 
     // Fallback 1: switch between flowchart <-> graph
     const firstLine = code.split(/\n/).find((l) => l.trim().length > 0) || '';
-    const [kw, dir, ...rest] = firstLine.trim().split(/\s+/);
+    const [kw, dir] = firstLine.trim().split(/\s+/);
     const body = code.split(/\n/).slice(1).join('\n');
     if (/^flowchart$/i.test(kw) && dir) {
       const alt = `graph ${dir}\n${body}`.trim();
