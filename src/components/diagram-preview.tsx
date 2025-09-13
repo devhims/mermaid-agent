@@ -174,7 +174,7 @@ export function DiagramPreview({
   return (
     <div className='flex flex-col h-full'>
       {isFullscreen && (
-        <div className='fixed inset-0 z-50 bg-background/95 backdrop-blur-sm'>
+        <div className='fixed inset-0 z-50 bg-background/95 backdrop-blur-sm diagram-grid-bg'>
           <TransformWrapper
             initialScale={1}
             minScale={0.1}
@@ -186,14 +186,13 @@ export function DiagramPreview({
             panning={{ disabled: false }}
             limitToBounds={false}
           >
-            <TransformComponent
-              wrapperClass='!absolute inset-0 overflow-hidden diagram-grid-bg'
-              contentClass='!h-full !w-full flex items-center justify-center'
-            >
-              <div
-                ref={fullscreenContainerRef}
-                className='[&_svg]:block [&_svg]:max-w-none [&_svg]:h-auto [&_svg]:overflow-visible [&_svg]:drop-shadow-lg'
-              />
+            <TransformComponent wrapperClass='!h-full !w-full' contentClass='!h-full !w-full'>
+              <div className='relative w-full h-full'>
+                <div
+                  ref={fullscreenContainerRef}
+                  className='absolute inset-0 flex items-center justify-center [&_svg]:block [&_svg]:max-w-none [&_svg]:h-auto [&_svg]:overflow-visible [&_svg]:drop-shadow-lg'
+                />
+              </div>
             </TransformComponent>
           </TransformWrapper>
           <div className='absolute top-2 right-3 text-xs text-muted-foreground select-none'>
