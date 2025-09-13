@@ -1,8 +1,17 @@
-"use client";
+'use client';
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import mermaid from "mermaid";
-import panzoom from "panzoom";
+import { useEffect, useRef, useState } from 'react';
+import mermaid from 'mermaid';
+import panzoom from 'panzoom';
+import { ThemeToggle } from '@/components/theme-toggle';
+import { CodeEditor } from '@/components/code-editor';
+import { DiagramPreview } from '@/components/diagram-preview';
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from '@/components/ui/resizable';
+import { Button } from '@/components/ui/button';
 
 const DEFAULT_CODE = `%% Mermaid Viewer — sample
 graph TD
@@ -13,17 +22,16 @@ graph TD
   D --> E
 `;
 
-type Theme = "default" | "dark";
-
 export default function Home() {
   const [code, setCode] = useState<string>(DEFAULT_CODE);
   const [error, setError] = useState<string | null>(null);
-  const [previewTheme, setPreviewTheme] = useState<Theme>("default");
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiSuggestion, setAiSuggestion] = useState<
-    | { fixedCode: string; rationale?: string; changes?: string[] }
-    | null
-  >(null);
+  const [aiSuggestion, setAiSuggestion] = useState<{
+    fixedCode: string;
+    rationale?: string;
+    changes?: string[];
+  } | null>(null);
+  const [editorCollapsed, setEditorCollapsed] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const panzoomRef = useRef<ReturnType<typeof panzoom> | null>(null);
@@ -33,25 +41,25 @@ export default function Home() {
   useEffect(() => {
     mermaid.initialize({
       startOnLoad: false,
-      theme: previewTheme,
-      securityLevel: "loose",
+      theme: 'default', // Use default theme, let next-themes handle the dark mode
+      securityLevel: 'loose',
       fontFamily:
-        "Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial",
+        'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial',
     });
-  }, [previewTheme]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     async function render() {
       if (!containerRef.current) return;
       setError(null);
-      containerRef.current.innerHTML = "";
+      containerRef.current.innerHTML = '';
       try {
         const prepared = sanitizeMermaid(debouncedCode);
         const { svg } = await renderWithFallback(prepared);
         if (cancelled) return;
         containerRef.current.innerHTML = svg;
-        const svgEl = containerRef.current.querySelector("svg");
+        const svgEl = containerRef.current.querySelector('svg');
         if (svgEl) {
           // Dispose any previous pan/zoom instance
           if (panzoomRef.current) {
@@ -68,9 +76,10 @@ export default function Home() {
         }
       } catch (e: unknown) {
         if (cancelled) return;
-        const msg = e instanceof Error ? e.message : "Failed to render diagram.";
+        const msg =
+          e instanceof Error ? e.message : 'Failed to render diagram.';
         // Provide a friendlier hint for a common error
-        const hint = msg.includes("No diagram type detected")
+        const hint = msg.includes('No diagram type detected')
           ? "Tip: Ensure your code starts with a diagram type, e.g., 'graph TD', 'flowchart LR', 'sequenceDiagram', etc. If you pasted Markdown fences, they are removed automatically."
           : undefined;
         setError(hint ? `${msg}\n${hint}` : msg);
@@ -80,20 +89,20 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedCode, previewTheme]);
+  }, [debouncedCode]);
 
   async function handleFixWithAI() {
     try {
       setAiLoading(true);
       setAiSuggestion(null);
-      const res = await fetch("/api/fix", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const res = await fetch('/api/fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code }),
       });
       if (!res.ok) {
         const t = await res.text();
-        throw new Error(t || "AI fix failed");
+        throw new Error(t || 'AI fix failed');
       }
       const data = (await res.json()) as {
         fixedCode: string;
@@ -102,7 +111,7 @@ export default function Home() {
       };
       setAiSuggestion(data);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "AI error";
+      const msg = e instanceof Error ? e.message : 'AI error';
       setAiSuggestion({ fixedCode: code, rationale: msg });
     } finally {
       setAiLoading(false);
@@ -116,19 +125,19 @@ export default function Home() {
   }
 
   function getSvgElement(): SVGSVGElement | null {
-    const svg = containerRef.current?.querySelector("svg");
+    const svg = containerRef.current?.querySelector('svg');
     return (svg as SVGSVGElement) || null;
   }
 
   function parseSvgSize(svg: SVGSVGElement): { width: number; height: number } {
-    const wAttr = svg.getAttribute("width");
-    const hAttr = svg.getAttribute("height");
+    const wAttr = svg.getAttribute('width');
+    const hAttr = svg.getAttribute('height');
     if (wAttr && hAttr) {
       const w = parseFloat(wAttr);
       const h = parseFloat(hAttr);
       if (!Number.isNaN(w) && !Number.isNaN(h)) return { width: w, height: h };
     }
-    const vb = svg.getAttribute("viewBox");
+    const vb = svg.getAttribute('viewBox');
     if (vb) {
       const parts = vb.split(/\s+/).map(Number);
       if (parts.length === 4) {
@@ -139,41 +148,82 @@ export default function Home() {
     return { width: 800, height: 600 };
   }
 
-  function downloadPng(bg: "light" | "dark") {
+  function downloadPng(bg: 'light' | 'dark') {
     const svg = getSvgElement();
     if (!svg) return;
 
-    const { width, height } = parseSvgSize(svg);
+    // Clone the SVG so we can safely adjust sizing without affecting the preview
+    const cloned = svg.cloneNode(true) as SVGSVGElement;
+    // Remove any panzoom-applied transforms/styles on the root element
+    cloned.removeAttribute('style');
+
+    // Compute tight bounding box of the content and add a small padding
+    const bbox = svg.getBBox();
+    const padding = 16; // px
+    const vbX = bbox.x - padding;
+    const vbY = bbox.y - padding;
+    const vbW = Math.max(1, bbox.width + padding * 2);
+    const vbH = Math.max(1, bbox.height + padding * 2);
+
+    // Force explicit viewBox/width/height so rasterization has exact dimensions
+    cloned.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
+    cloned.setAttribute('width', String(vbW));
+    cloned.setAttribute('height', String(vbH));
+    if (!cloned.getAttribute('xmlns')) {
+      cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    }
+
     const serializer = new XMLSerializer();
-    const source = serializer.serializeToString(svg);
-    const svgBlob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(svgBlob);
+    const source = serializer.serializeToString(cloned);
+
+    // Convert SVG to data URL to avoid CORS issues
+    const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+      source
+    )}`;
 
     const img = new Image();
+    img.decoding = 'async';
     img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.ceil(width);
-      canvas.height = Math.ceil(height);
-      const ctx = canvas.getContext("2d");
+      // Use the computed export dimensions for proper scaling
+      const exportW = vbW;
+      const exportH = vbH;
+      const scale = 2; // Higher DPI for better quality
+
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(exportW * scale));
+      canvas.height = Math.max(1, Math.round(exportH * scale));
+
+      const ctx = canvas.getContext('2d');
       if (!ctx) return;
-      ctx.fillStyle = bg === "dark" ? "#0b0f1a" : "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);
-      URL.revokeObjectURL(url);
+
+      // Enable high DPI rendering
+      ctx.scale(scale, scale);
+
+      // Fill background
+      ctx.fillStyle = bg === 'dark' ? '#0b0f1a' : '#ffffff';
+      ctx.fillRect(0, 0, exportW, exportH);
+
+      // Draw image with exact, unclipped dimensions
+      ctx.drawImage(img, 0, 0, exportW, exportH);
+
+      // Convert to blob and download
       canvas.toBlob(
         (blob) => {
           if (!blob) return;
-          const a = document.createElement("a");
+          const a = document.createElement('a');
           a.href = URL.createObjectURL(blob);
           a.download = `mermaid-diagram-${bg}.png`;
           a.click();
           setTimeout(() => URL.revokeObjectURL(a.href), 2000);
         },
-        "image/png"
+        'image/png',
+        1.0
       );
     };
-    img.onerror = () => URL.revokeObjectURL(url);
-    img.src = url;
+    img.onerror = () => {
+      console.error('Failed to load SVG image');
+    };
+    img.src = svgDataUrl;
   }
 
   function zoomIn() {
@@ -205,7 +255,10 @@ export default function Home() {
     const pad = 16;
     const cw = container.clientWidth - pad * 2;
     const ch = container.clientHeight - pad * 2;
-    const scale = Math.max(0.1, Math.min(cw / svgRect.width, ch / svgRect.height));
+    const scale = Math.max(
+      0.1,
+      Math.min(cw / svgRect.width, ch / svgRect.height)
+    );
     inst.moveTo(pad - svgRect.x * scale, pad - svgRect.y * scale);
     inst.zoomAbs(0, 0, scale);
   }
@@ -213,179 +266,104 @@ export default function Home() {
   function onImportFile(file: File) {
     const reader = new FileReader();
     reader.onload = () => {
-      const text = typeof reader.result === "string" ? reader.result : "";
+      const text = typeof reader.result === 'string' ? reader.result : '';
       setCode(text);
     };
     reader.readAsText(file);
   }
   function exportMmd() {
-    const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
+    const blob = new Blob([code], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const a = document.createElement('a');
     a.href = url;
-    a.download = "diagram.mmd";
+    a.download = 'diagram.mmd';
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
-  const bgGradient = useMemo(
-    () =>
-      previewTheme === "dark"
-        ? "bg-[radial-gradient(1200px_circle_at_10%_10%,#0b1220_10%,#0a0a0a_60%)]"
-        : "bg-[radial-gradient(1200px_circle_at_10%_10%,#f0f7ff_10%,#ffffff_60%)]",
-    [previewTheme]
-  );
-
   return (
-    <div className={`min-h-screen ${bgGradient} text-[var(--foreground)]`}>
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:py-10">
-        <header className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            Mermaid Viewer
-          </h1>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setPreviewTheme((t) => (t === "dark" ? "default" : "dark"))}
-              className="rounded-md border border-black/10 dark:border-white/15 px-3 py-1.5 text-sm bg-white/60 dark:bg-white/5 backdrop-blur hover:bg-white/80 dark:hover:bg-white/10 transition"
-            >
-              Theme: {previewTheme === "dark" ? "Dark" : "Light"}
-            </button>
-            <button
-              onClick={handleFixWithAI}
-              disabled={aiLoading}
-              className="rounded-md bg-gradient-to-r from-indigo-500 to-violet-500 text-white px-3 py-1.5 text-sm shadow hover:opacity-95 disabled:opacity-60"
-            >
-              {aiLoading ? "Fixing with AI…" : "Fix with AI"}
-            </button>
-          </div>
-        </header>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-          {/* Editor */}
-          <div className="rounded-xl border border-black/10 dark:border-white/15 bg-white/70 dark:bg-white/[0.03] backdrop-blur p-3 sm:p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs uppercase tracking-wide text-black/60 dark:text-white/60">Mermaid Code</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setCode(DEFAULT_CODE)}
-                  className="text-xs rounded border border-black/10 dark:border-white/15 px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10"
-                >
-                  Reset sample
-                </button>
-                <label className="text-xs rounded border border-black/10 dark:border-white/15 px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer">
-                  Import .mmd
-                  <input
-                    type="file"
-                    accept=".mmd,.mermaid,.txt"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) onImportFile(f);
-                      e.currentTarget.value = "";
-                    }}
-                  />
-                </label>
-                <button
-                  onClick={exportMmd}
-                  className="text-xs rounded border border-black/10 dark:border-white/15 px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10"
-                >
-                  Export .mmd
-                </button>
-              </div>
-            </div>
-            <textarea
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              spellCheck={false}
-              className="w-full h-[360px] sm:h-[460px] resize-y rounded-lg bg-white dark:bg-[#0b0f1a] text-sm p-3 border border-black/10 dark:border-white/15 font-mono leading-6 shadow-inner"
-              placeholder="Paste Mermaid code here…"
-            />
-
-            {aiSuggestion && (
-              <div className="mt-3 rounded-lg border border-emerald-400/30 bg-emerald-50/70 dark:bg-emerald-900/20 p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-sm font-medium text-emerald-800 dark:text-emerald-200">AI Suggestion</div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={acceptAISuggestion}
-                      className="text-xs rounded bg-emerald-600 text-white px-2 py-1 hover:bg-emerald-700"
-                    >
-                      Replace
-                    </button>
-                    <button
-                      onClick={() => setAiSuggestion(null)}
-                      className="text-xs rounded border border-black/10 dark:border-white/20 px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                </div>
-                {aiSuggestion.rationale && (
-                  <p className="text-xs text-black/70 dark:text-white/70 mb-2">{aiSuggestion.rationale}</p>
-                )}
-                <pre className="text-xs whitespace-pre-wrap max-h-48 overflow-auto p-2 rounded bg-white/60 dark:bg-white/5 border border-black/10 dark:border-white/10">{aiSuggestion.fixedCode}</pre>
-              </div>
-            )}
-          </div>
-
-          {/* Preview */}
-          <div className="rounded-xl border border-black/10 dark:border-white/15 bg-white/60 dark:bg-white/[0.03] backdrop-blur p-3 sm:p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs uppercase tracking-wide text-black/60 dark:text-white/60">Preview</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => downloadPng("light")}
-                  className="text-xs rounded border border-black/10 dark:border-white/15 px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10"
-                >
-                  Download PNG (Light)
-                </button>
-                <button
-                  onClick={() => downloadPng("dark")}
-                  className="text-xs rounded border border-black/10 dark:border-white/15 px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10"
-                >
-                  Download PNG (Dark)
-                </button>
-                <div className="w-px h-5 bg-black/10 dark:bg-white/15" />
-                <button
-                  onClick={zoomOut}
-                  className="text-xs rounded border border-black/10 dark:border-white/15 px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10"
-                >
-                  −
-                </button>
-                <button
-                  onClick={zoomIn}
-                  className="text-xs rounded border border-black/10 dark:border-white/15 px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10"
-                >
-                  +
-                </button>
-                <button
-                  onClick={resetView}
-                  className="text-xs rounded border border-black/10 dark:border-white/15 px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10"
-                >
-                  Reset
-                </button>
-                <button
-                  onClick={fitToView}
-                  className="text-xs rounded border border-black/10 dark:border-white/15 px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10"
-                >
-                  Fit
-                </button>
-              </div>
-            </div>
-            <div className="relative rounded-lg border border-black/10 dark:border-white/15 bg-white dark:bg-[#0b0f1a] min-h-[360px] sm:min-h-[460px] overflow-hidden p-3">
-              {error ? (
-                <div className="text-sm text-red-600 dark:text-red-400">{error}</div>
-              ) : (
-                <div ref={containerRef} className="h-full w-full overflow-auto [&_svg]:w-full [&_svg]:h-auto touch-pan-y" />
-              )}
-            </div>
+    <div className='h-screen bg-background text-foreground flex flex-col'>
+      {/* Header */}
+      <header className='flex items-center justify-between px-6 py-4 border-b bg-card/50 backdrop-blur-sm'>
+        <div className='flex items-baseline gap-4'>
+          <h1 className='text-xl font-bold tracking-tight'>Mermaid Viewer</h1>
+          <div className='text-xs text-muted-foreground bg-muted px-2 py-1 rounded'>
+            Free Mermaid Editor
           </div>
         </div>
 
-        <footer className="mt-8 text-center text-xs text-black/50 dark:text-white/50">
-          Built with Next.js, Mermaid, and GPT‑4o.
-        </footer>
+        <ThemeToggle />
+      </header>
+
+      {/* Main Content */}
+      <div className='flex-1 overflow-hidden'>
+        <ResizablePanelGroup direction='horizontal' className='h-full'>
+          {/* Code Editor Panel */}
+          <ResizablePanel
+            defaultSize={editorCollapsed ? 0 : 35}
+            minSize={0}
+            maxSize={50}
+            className='min-w-0'
+            collapsible
+            collapsedSize={0}
+          >
+            <div className='h-full border-r bg-card/30'>
+              <div className='h-full p-4'>
+                <CodeEditor
+                  code={code}
+                  onCodeChange={setCode}
+                  onReset={() => setCode(DEFAULT_CODE)}
+                  onImport={onImportFile}
+                  onExport={exportMmd}
+                  aiSuggestion={aiSuggestion}
+                  onAcceptSuggestion={acceptAISuggestion}
+                  onDismissSuggestion={() => setAiSuggestion(null)}
+                  aiLoading={aiLoading}
+                  onFixWithAI={handleFixWithAI}
+                  isCollapsed={editorCollapsed}
+                  onToggleCollapse={() => setEditorCollapsed(!editorCollapsed)}
+                />
+              </div>
+            </div>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          {/* Preview Panel */}
+          <ResizablePanel defaultSize={editorCollapsed ? 100 : 70} minSize={50}>
+            <div className='h-full'>
+              <DiagramPreview
+                error={error}
+                containerRef={containerRef}
+                onDownloadLight={() => downloadPng('light')}
+                onDownloadDark={() => downloadPng('dark')}
+                onZoomIn={zoomIn}
+                onZoomOut={zoomOut}
+                onResetView={resetView}
+                onFitToView={fitToView}
+              />
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </div>
+
+      {/* Footer */}
+      <footer className='px-6 py-3 border-t bg-card/30 backdrop-blur-sm'>
+        <div className='flex items-center justify-between text-xs text-muted-foreground'>
+          <span>Built with Next.js, Mermaid, and GPT-4o</span>
+          <div className='flex items-center gap-4'>
+            <span>v1.0.0</span>
+            <a
+              href='https://github.com/mermaid-js/mermaid'
+              target='_blank'
+              rel='noopener noreferrer'
+              className='hover:text-foreground transition-colors'
+            >
+              Powered by Mermaid
+            </a>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
@@ -401,18 +379,22 @@ function useDebounced<T>(value: T, delay = 200) {
 
 function sanitizeMermaid(input: string): string {
   // Normalize newlines and trim overall
-  let text = input.replace(/\r\n?/g, "\n").replace(/^\uFEFF/, "").trim();
+  let text = input
+    .replace(/\r\n?/g, '\n')
+    .replace(/^\uFEFF/, '')
+    .trim();
   // Extract fenced code if present
   const fence = /```(?:\s*mermaid)?\s*([\s\S]*?)```/i.exec(text);
   if (fence && fence[1]) text = fence[1];
   // Remove zero-width and bidi control characters globally
-  const INVISIBLES = /[\u200B-\u200D\uFEFF\u2060\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
-  text = text.replace(INVISIBLES, "");
+  const INVISIBLES =
+    /[\u200B-\u200D\uFEFF\u2060\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+  text = text.replace(INVISIBLES, '');
   // Trim each line's leading/trailing spaces
   text = text
-    .split("\n")
-    .map((l) => l.replace(/^\s+|\s+$/g, ""))
-    .join("\n")
+    .split('\n')
+    .map((l) => l.replace(/^\s+|\s+$/g, ''))
+    .join('\n')
     .trim();
   return text;
 }
@@ -421,35 +403,39 @@ async function renderWithFallback(code: string): Promise<{ svg: string }> {
   // Primary attempt
   try {
     await mermaid.parse(code);
-    return await mermaid.render("mermaid-preview", code);
+    return await mermaid.render('mermaid-preview', code);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (!/No diagram type detected/i.test(msg)) throw err;
 
     // Fallback 1: switch between flowchart <-> graph
-    const firstLine = code.split(/\n/).find((l) => l.trim().length > 0) || "";
+    const firstLine = code.split(/\n/).find((l) => l.trim().length > 0) || '';
     const [kw, dir, ...rest] = firstLine.trim().split(/\s+/);
-    const body = code.split(/\n/).slice(1).join("\n");
+    const body = code.split(/\n/).slice(1).join('\n');
     if (/^flowchart$/i.test(kw) && dir) {
       const alt = `graph ${dir}\n${body}`.trim();
       try {
         await mermaid.parse(alt);
-        return await mermaid.render("mermaid-preview", alt);
+        return await mermaid.render('mermaid-preview', alt);
       } catch {}
     } else if (/^graph$/i.test(kw) && dir) {
       const alt = `flowchart ${dir}\n${body}`.trim();
       try {
         await mermaid.parse(alt);
-        return await mermaid.render("mermaid-preview", alt);
+        return await mermaid.render('mermaid-preview', alt);
       } catch {}
     }
 
     // Fallback 2: If no recognizable header, try prefixing flowchart TD
-    if (!/^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|stateDiagram-v2|gantt|erDiagram|journey|pie|mindmap|timeline)\b/i.test(firstLine)) {
+    if (
+      !/^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|stateDiagram-v2|gantt|erDiagram|journey|pie|mindmap|timeline)\b/i.test(
+        firstLine
+      )
+    ) {
       const alt = `flowchart TD\n${code}`;
       try {
         await mermaid.parse(alt);
-        return await mermaid.render("mermaid-preview", alt);
+        return await mermaid.render('mermaid-preview', alt);
       } catch {}
     }
 
