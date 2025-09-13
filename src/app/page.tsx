@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 import panzoom from 'panzoom';
+import { useTheme } from 'next-themes';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { CodeEditor } from '@/components/code-editor';
 import { DiagramPreview } from '@/components/diagram-preview';
@@ -12,6 +13,7 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 
 const DEFAULT_CODE = `%% Mermaid Viewer — sample
 graph TD
@@ -32,17 +34,31 @@ export default function Home() {
     changes?: string[];
   } | null>(null);
   const [editorCollapsed, setEditorCollapsed] = useState(false);
+  const [isRendering, setIsRendering] = useState(false);
 
+  const { resolvedTheme } = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const panzoomRef = useRef<ReturnType<typeof panzoom> | null>(null);
+  const lastPointerRef = useRef<{ x: number; y: number; has: boolean }>({
+    x: 0,
+    y: 0,
+    has: false,
+  });
 
-  const debouncedCode = useDebounced(code, 250);
+  const debouncedCode = useDebounced(code, 100);
+
+  // Clear error state when code changes to ensure diagram updates
+  useEffect(() => {
+    if (error) {
+      setError(null);
+    }
+  }, [code]);
 
   useEffect(() => {
     mermaid.initialize({
       startOnLoad: false,
-      theme: 'default', // Use default theme, let next-themes handle the dark mode
       securityLevel: 'loose',
+      theme: 'default', // Will be overridden per render based on UI theme
       fontFamily:
         'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial',
     });
@@ -50,18 +66,74 @@ export default function Home() {
 
   useEffect(() => {
     let cancelled = false;
+    const el = containerRef.current;
+    function onMove(e: MouseEvent) {
+      lastPointerRef.current = { x: e.clientX, y: e.clientY, has: true };
+    }
+    if (el) el.addEventListener('mousemove', onMove, { passive: true });
+
     async function render() {
-      if (!containerRef.current) return;
+      // Wait for the preview container to mount (first load race)
+      if (!containerRef.current) {
+        for (let i = 0; i < 10 && !containerRef.current; i++) {
+          // wait up to ~10 frames (~160ms) for mount
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+        }
+        if (!containerRef.current) return; // still not ready
+      }
+
+      // Always clear error state when attempting to render
       setError(null);
+      setIsRendering(true);
+
+      // Clear container content to prepare for new render
       containerRef.current.innerHTML = '';
+
+      // Use Mermaid's built-in themes based on next-themes
+      const mermaidTheme = resolvedTheme === 'dark' ? 'dark' : 'default';
+
       try {
+        // Re-initialize Mermaid with current theme and consistent spacing
+        await mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'loose',
+          theme: mermaidTheme,
+          flowchart: {
+            htmlLabels: true,
+            nodeSpacing: 50,
+            rankSpacing: 50,
+            padding: 12,
+            useMaxWidth: false,
+          },
+          fontFamily:
+            'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial',
+          themeVariables: {
+            fontSize: '16px',
+            lineHeight: '24px',
+            padding: 12,
+          },
+          themeCSS: `
+            .nodeLabel, .edgeLabel, .label { line-height: 1.4; }
+            foreignObject div, foreignObject span { line-height: 1.4; }
+          `,
+        });
+
+        // Ensure fonts are loaded so Mermaid measures text correctly
+        if ((document as any).fonts?.ready) {
+          try {
+            await (document as any).fonts.ready;
+          } catch {}
+        }
+
         const prepared = sanitizeMermaid(debouncedCode);
         const { svg } = await renderWithFallback(prepared);
+
         if (cancelled) return;
-        containerRef.current.innerHTML = svg;
-        const svgEl = containerRef.current.querySelector('svg');
-        if (svgEl) {
-          // Dispose any previous pan/zoom instance
+
+        const applyPanzoom = () => {
+          const svgEl = containerRef.current?.querySelector('svg');
+          if (!svgEl) return;
           if (panzoomRef.current) {
             panzoomRef.current.dispose();
             panzoomRef.current = null;
@@ -73,23 +145,92 @@ export default function Home() {
             zoomDoubleClickSpeed: 1,
           });
           panzoomRef.current = instance;
+        };
+
+        // First insert
+        if (containerRef.current) {
+          containerRef.current.innerHTML = svg;
+          applyPanzoom();
         }
+
+        // Immediately perform a second render on the next frame to
+        // normalize layout with finalized CSS/metrics.
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+        if (!cancelled) {
+          const { svg: svg2 } = await renderWithFallback(prepared);
+          if (!cancelled && containerRef.current) {
+            containerRef.current.innerHTML = svg2;
+            applyPanzoom();
+          }
+        }
+
+        setIsRendering(false);
       } catch (e: unknown) {
         if (cancelled) return;
+
+        setIsRendering(false);
         const msg =
           e instanceof Error ? e.message : 'Failed to render diagram.';
+
         // Provide a friendlier hint for a common error
         const hint = msg.includes('No diagram type detected')
           ? "Tip: Ensure your code starts with a diagram type, e.g., 'graph TD', 'flowchart LR', 'sequenceDiagram', etc. If you pasted Markdown fences, they are removed automatically."
           : undefined;
+
         setError(hint ? `${msg}\n${hint}` : msg);
+
+        // Clear container content on error to prevent stale content
+        if (containerRef.current) {
+          containerRef.current.innerHTML = '';
+        }
       }
     }
     render();
     return () => {
       cancelled = true;
+      if (el) el.removeEventListener('mousemove', onMove as any);
     };
-  }, [debouncedCode]);
+  }, [debouncedCode, resolvedTheme]);
+
+  function zoomIn() {
+    const inst = panzoomRef.current;
+    const svg = getSvgElement();
+    if (!inst || !svg) return;
+    const rect = svg.getBoundingClientRect();
+    const lp = lastPointerRef.current;
+    const x = lp.has ? lp.x - rect.left : rect.width / 2;
+    const y = lp.has ? lp.y - rect.top : rect.height / 2;
+    inst.smoothZoom(x, y, 1.2);
+  }
+  function zoomOut() {
+    const inst = panzoomRef.current;
+    const svg = getSvgElement();
+    if (!inst || !svg) return;
+    const rect = svg.getBoundingClientRect();
+    const lp = lastPointerRef.current;
+    const x = lp.has ? lp.x - rect.left : rect.width / 2;
+    const y = lp.has ? lp.y - rect.top : rect.height / 2;
+    inst.smoothZoom(x, y, 0.8);
+  }
+  function resetView() {
+    const inst = panzoomRef.current;
+    if (!inst) return;
+    inst.moveTo(0, 0);
+    inst.zoomAbs(0, 0, 1);
+  }
+  function fitToView() {
+    const inst = panzoomRef.current;
+    const svg = getSvgElement();
+    const container = containerRef.current;
+    if (!inst || !svg || !container) return;
+    const bbox = svg.getBBox();
+    const pad = 16;
+    const cw = container.clientWidth - pad * 2;
+    const ch = container.clientHeight - pad * 2;
+    const scale = Math.max(0.1, Math.min(cw / bbox.width, ch / bbox.height));
+    inst.zoomAbs(0, 0, scale);
+    inst.moveTo(pad - bbox.x * scale, pad - bbox.y * scale);
+  }
 
   async function handleFixWithAI() {
     try {
@@ -148,7 +289,7 @@ export default function Home() {
     return { width: 800, height: 600 };
   }
 
-  function downloadPng(bg: 'light' | 'dark') {
+  function downloadPng(bg: 'light' | 'dark' | 'transparent') {
     const svg = getSvgElement();
     if (!svg) return;
 
@@ -199,9 +340,16 @@ export default function Home() {
       // Enable high DPI rendering
       ctx.scale(scale, scale);
 
-      // Fill background
-      ctx.fillStyle = bg === 'dark' ? '#0b0f1a' : '#ffffff';
-      ctx.fillRect(0, 0, exportW, exportH);
+      // Fill background (skip for transparent)
+      if (bg === 'dark') {
+        ctx.fillStyle = '#0b0f1a';
+        ctx.fillRect(0, 0, exportW, exportH);
+        // Draw dotted grid to match preview
+        drawDarkGrid(ctx, exportW, exportH);
+      } else if (bg === 'light') {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, exportW, exportH);
+      }
 
       // Draw image with exact, unclipped dimensions
       ctx.drawImage(img, 0, 0, exportW, exportH);
@@ -226,42 +374,24 @@ export default function Home() {
     img.src = svgDataUrl;
   }
 
-  function zoomIn() {
-    const inst = panzoomRef.current;
-    const svg = getSvgElement();
-    if (!inst || !svg) return;
-    const rect = svg.getBoundingClientRect();
-    inst.smoothZoom(rect.width / 2, rect.height / 2, 1.2);
+  function drawDarkGrid(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number
+  ) {
+    const spacing = 24; // px
+    const radius = 1; // px
+    ctx.fillStyle = 'rgba(255,255,255,0.07)';
+    for (let y = 0; y < height; y += spacing) {
+      for (let x = 0; x < width; x += spacing) {
+        ctx.beginPath();
+        ctx.arc(x + 2, y + 2, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
-  function zoomOut() {
-    const inst = panzoomRef.current;
-    const svg = getSvgElement();
-    if (!inst || !svg) return;
-    const rect = svg.getBoundingClientRect();
-    inst.smoothZoom(rect.width / 2, rect.height / 2, 0.8);
-  }
-  function resetView() {
-    const inst = panzoomRef.current;
-    if (!inst) return;
-    inst.moveTo(0, 0);
-    inst.zoomAbs(0, 0, 1);
-  }
-  function fitToView() {
-    const inst = panzoomRef.current;
-    const svg = getSvgElement();
-    const container = containerRef.current;
-    if (!inst || !svg || !container) return;
-    const svgRect = svg.getBBox();
-    const pad = 16;
-    const cw = container.clientWidth - pad * 2;
-    const ch = container.clientHeight - pad * 2;
-    const scale = Math.max(
-      0.1,
-      Math.min(cw / svgRect.width, ch / svgRect.height)
-    );
-    inst.moveTo(pad - svgRect.x * scale, pad - svgRect.y * scale);
-    inst.zoomAbs(0, 0, scale);
-  }
+
+  // Zoom handlers removed; handled in DiagramPreview
 
   function onImportFile(file: File) {
     const reader = new FileReader();
@@ -284,12 +414,12 @@ export default function Home() {
   return (
     <div className='h-screen bg-background text-foreground flex flex-col'>
       {/* Header */}
-      <header className='flex items-center justify-between px-6 py-4 border-b bg-card/50 backdrop-blur-sm'>
-        <div className='flex items-baseline gap-4'>
+      <header className='flex items-center justify-between px-4 py-4 border-b bg-card/50 backdrop-blur-sm'>
+        <div className='flex items-center gap-4'>
           <h1 className='text-xl font-bold tracking-tight'>Mermaid Viewer</h1>
-          <div className='text-xs text-muted-foreground bg-muted px-2 py-1 rounded'>
-            Free Mermaid Editor
-          </div>
+          <Badge variant='outline' className='text-xs px-2 py-1 rounded-md'>
+            AI Powered
+          </Badge>
         </div>
 
         <ThemeToggle />
@@ -335,8 +465,10 @@ export default function Home() {
               <DiagramPreview
                 error={error}
                 containerRef={containerRef}
+                isRendering={isRendering}
                 onDownloadLight={() => downloadPng('light')}
                 onDownloadDark={() => downloadPng('dark')}
+                onDownloadTransparent={() => downloadPng('transparent')}
                 onZoomIn={zoomIn}
                 onZoomOut={zoomOut}
                 onResetView={resetView}

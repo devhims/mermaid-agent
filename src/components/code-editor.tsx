@@ -70,20 +70,19 @@ export function CodeEditor({
                   variant='ghost'
                   size='sm'
                   onClick={onReset}
-                  className='h-8 px-2 text-xs'
+                  className='h-8 px-2 text-xs cursor-pointer'
                 >
-                  <RotateCcw className='h-3 w-3 mr-1' />
-                  Reset
+                  <RotateCcw className='h-3 w-3' />
                 </Button>
 
                 <Button
-                  variant='ghost'
+                  variant='outline'
                   size='sm'
                   onClick={onFixWithAI}
                   disabled={aiLoading}
-                  className='h-8 px-2 text-xs'
+                  className='h-8 px-2 text-xs text-white bg-white dark:bg-gray-800 dark:text-white shadow-sm cursor-pointer'
                 >
-                  {aiLoading ? 'Fixing...' : 'Fix with AI'}
+                  {aiLoading ? 'Fixing...' : '✨ Fix with AI'}
                 </Button>
               </div>
             </div>
@@ -96,29 +95,15 @@ export function CodeEditor({
                 <span className='text-xs text-muted-foreground uppercase tracking-wide'>
                   Editor
                 </span>
-                <div className='flex gap-2'>
-                  <Button
-                    variant='ghost'
-                    size='sm'
-                    onClick={() => navigator.clipboard.writeText(code)}
-                    className='h-7 px-2 text-xs'
-                  >
-                    <Copy className='h-3 w-3 mr-1' />
-                    Copy
-                  </Button>
-                  <label className='cursor-pointer'>
-                    <input
-                      type='file'
-                      accept='.mmd,.mermaid,.txt'
-                      className='hidden'
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) onImport(file);
-                        e.currentTarget.value = '';
-                      }}
-                    />
-                  </label>
-                </div>
+
+                <Button
+                  variant='outline'
+                  size='sm'
+                  onClick={() => navigator.clipboard.writeText(code)}
+                  className='text-xs cursor-pointer'
+                >
+                  <Copy className='h-3 w-3' />
+                </Button>
               </div>
 
               <textarea
