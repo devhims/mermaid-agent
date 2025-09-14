@@ -172,7 +172,7 @@ export function DiagramPreview({
   }, [isFullscreen, containerRef]);
 
   return (
-    <div className='flex flex-col h-full'>
+    <div className='relative h-full'>
       {isFullscreen && (
         <div className='fixed inset-0 z-50 bg-background/95 backdrop-blur-sm diagram-grid-bg'>
           <TransformWrapper
@@ -204,9 +204,8 @@ export function DiagramPreview({
         </div>
       )}
       {/* Toolbar */}
-      <div className='flex items-center justify-between p-4 border-b bg-card/50 backdrop-blur-sm'>
+      <div className='absolute top-0 left-0 right-0 z-10 flex items-center justify-between p-4'>
         <div className='flex items-center gap-3'>
-          <h2 className='text-xl font-semibold'>Preview</h2>
           {isRendering && (
             <span className='text-xs text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 px-2 py-1 rounded flex items-center gap-1'>
               <div className='w-2 h-2 border border-current border-t-transparent rounded-full animate-spin'></div>
@@ -220,8 +219,16 @@ export function DiagramPreview({
           )}
         </div>
 
-        <div className='flex items-center gap-3'>
+        <div className='flex items-center gap-1'>
           {/* Zoom Controls */}
+          <Button
+            variant='ghost'
+            size='default'
+            onClick={onZoomIn}
+            className='h-10 w-10 p-0 cursor-pointer'
+          >
+            <ZoomIn className='h-4 w-4' />
+          </Button>
           <div className='flex items-center gap-1'>
             <Button
               variant='ghost'
@@ -230,14 +237,6 @@ export function DiagramPreview({
               className='h-10 w-10 p-0 cursor-pointer'
             >
               <ZoomOut className='h-4 w-4' />
-            </Button>
-            <Button
-              variant='ghost'
-              size='default'
-              onClick={onZoomIn}
-              className='h-10 w-10 p-0 cursor-pointer'
-            >
-              <ZoomIn className='h-4 w-4' />
             </Button>
 
             <Button
@@ -394,7 +393,7 @@ export function DiagramPreview({
       </div>
 
       {/* Preview Area */}
-      <div className='flex-1 relative overflow-hidden diagram-grid-bg'>
+      <div className='absolute inset-0 overflow-hidden diagram-grid-bg'>
         {error ? (
           <div className='absolute inset-0 flex items-center justify-center p-8'>
             <div className='max-w-md text-center space-y-4'>

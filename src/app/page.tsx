@@ -48,10 +48,8 @@ export default function Home() {
 
   // Clear error state when code changes to ensure diagram updates
   useEffect(() => {
-    if (error) {
-      setError(null);
-    }
-  }, [code, error]);
+    setError(null);
+  }, [code]);
 
   useEffect(() => {
     mermaid.initialize({
@@ -84,8 +82,6 @@ export default function Home() {
         if (!containerRef.current) return; // still not ready
       }
 
-      // Always clear error state when attempting to render
-      setError(null);
       setIsRendering(true);
 
       // Clear container content to prepare for new render
@@ -152,6 +148,8 @@ export default function Home() {
           }
         }
 
+        // Clear any previous error on successful render
+        setError(null);
         setIsRendering(false);
       } catch (e: unknown) {
         if (cancelled) return;
@@ -380,9 +378,9 @@ export default function Home() {
       {/* Header */}
       <header className='flex items-center justify-between px-4 py-4 border-b bg-card/50 backdrop-blur-sm'>
         <div className='flex items-center gap-4'>
-          <h1 className='text-xl font-bold tracking-tight'>Mermaid Viewer</h1>
+          <h1 className='text-xl font-bold tracking-tight'>Mermaid Agent</h1>
           <Badge variant='outline' className='text-xs px-2 py-1 rounded-md'>
-            AI Powered
+            AI Powered Viewer
           </Badge>
         </div>
 
