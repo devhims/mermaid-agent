@@ -1,9 +1,7 @@
-import { generateText, tool, stepCountIs } from 'ai';
+import { generateText, tool } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
 import { NextRequest } from 'next/server';
-// Prefer the standalone parser in Node; fall back to mermaid core for unsupported types
-import { parse as parseAst } from '@mermaid-js/parser';
 import mermaid from 'mermaid/dist/mermaid.core.mjs';
 
 // Initialize mermaid for Node.js
@@ -12,19 +10,7 @@ mermaid.initialize({
   securityLevel: 'loose', // For backend validation
 });
 
-// Detect the diagram type from the first non-empty line
-function detectDiagramType(code: string): string | undefined {
-  const firstLine = code
-    .split('\n')
-    .map((l) => l.trim())
-    .find((l) => l.length > 0);
-  if (!firstLine) return undefined;
-  const m = /^(\w[\w-]*)/i.exec(firstLine);
-  if (!m) return undefined;
-  return m[1];
-}
-
-// Validate Mermaid code using parser-first approach (falls back to mermaid core)
+// Validate Mermaid code using Mermaid core only
 async function validateMermaidCode(
   code: string
 ): Promise<{ isValid: boolean; error?: string }> {
@@ -50,34 +36,9 @@ async function validateMermaidCode(
       .map((l) => l.replace(/^\s+|\s+$/g, ''))
       .join('\n')
       .trim();
-    // Prefer @mermaid-js/parser for supported diagram types
-    const type = (detectDiagramType(sanitized) || '').toLowerCase();
-    const parserSupported = [
-      'pie',
-      'gitgraph',
-      'info',
-      'packet',
-      'architecture',
-      'radar',
-      'treemap',
-    ];
-
-    if (parserSupported.includes(type)) {
-      try {
-        // parser requires the diagram type and the code body (including the header)
-        await parseAst(type as any, sanitized);
-        console.log('✅ Mermaid validation passed (parser):', { diagramType: type });
-        return { isValid: true };
-      } catch (e: any) {
-        const emsg = e?.message || String(e);
-        console.log('❌ Mermaid validation failed (parser):', emsg);
-        return { isValid: false, error: emsg };
-      }
-    }
-
-    // Fallback: Use mermaid core parser for other types (e.g., flowchart/graph)
+    // Use mermaid core parser for validation
     const result = await mermaid.parse(sanitized, { suppressErrors: false });
-    console.log('✅ Mermaid validation passed (mermaid):', result);
+    console.log('✅ Mermaid validation passed:', result);
     return { isValid: true };
   } catch (error: any) {
     const errorMessage =
