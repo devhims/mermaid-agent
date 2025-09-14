@@ -26,11 +26,13 @@ graph TD
 export default function Home() {
   const [code, setCode] = useState<string>(DEFAULT_CODE);
   const [error, setError] = useState<string | null>(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiSuggestion, setAiSuggestion] = useState<{
-    fixedCode: string;
-    rationale?: string;
-    changes?: string[];
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentResult, setAgentResult] = useState<{
+    success: boolean;
+    message: string;
+    finalCode?: string;
+    stepsUsed?: number;
+    steps?: { action: string; details: string }[];
   } | null>(null);
   const [editorCollapsed, setEditorCollapsed] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
@@ -213,37 +215,102 @@ export default function Home() {
     }
   }
 
-  async function handleFixWithAI() {
+  async function handleFixWithAgent() {
     try {
-      setAiLoading(true);
-      setAiSuggestion(null);
-      const res = await fetch('/api/fix', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
-      });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(t || 'AI fix failed');
+      setAgentLoading(true);
+      setAgentResult(null);
+
+      let currentCode = code;
+      let currentError = error;
+      let step = 1;
+      const maxSteps = 5;
+      const steps: string[] = [];
+
+      let fixSummary: string | undefined;
+      while (currentError && step <= maxSteps) {
+        console.log(`🔄 Agent Step ${step}:`, {
+          currentError,
+          codeLength: currentCode.length,
+        });
+
+        const res = await fetch('/api/agent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code: currentCode,
+            error: currentError,
+            step: step,
+          }),
+        });
+
+        if (!res.ok) {
+          const t = await res.text();
+          throw new Error(t || 'Agent fix failed');
+        }
+
+        const data = await res.json();
+        steps.push(`Step ${step}: ${data.message}`);
+        fixSummary = data.message || fixSummary;
+
+        if (!data.success) {
+          throw new Error(data.message || 'Agent failed to generate fix');
+        }
+
+        // Apply the fix
+        currentCode = data.fixedCode;
+        setCode(currentCode); // Update UI immediately to show progress
+
+        // Use backend validation results
+        if (data.validated) {
+          currentError = null; // Backend confirmed it's valid
+          console.log(`✅ Step ${step}: Backend validation passed`);
+        } else {
+          currentError = data.validationError || 'Validation failed';
+          console.log(
+            `❌ Step ${step}: Backend validation failed:`,
+            currentError
+          );
+        }
+
+        // If agent says it's complete or no more errors, we're done
+        if (data.isComplete || !currentError) {
+          break;
+        }
+
+        step++;
       }
-      const data = (await res.json()) as {
-        fixedCode: string;
-        rationale?: string;
-        changes?: string[];
-      };
-      setAiSuggestion(data);
+
+      // Final result
+      const wasSuccessful = !currentError;
+      setAgentResult({
+        success: wasSuccessful,
+        message: wasSuccessful
+          ? fixSummary ||
+            `✅ Successfully fixed in ${step} step${step > 1 ? 's' : ''}!`
+          : `⚠️ Made progress in ${step} steps but still has issues. Final error: ${currentError}`,
+        finalCode: currentCode,
+        stepsUsed: step,
+        steps: steps.map((stepMsg, index) => ({
+          action: `Step ${index + 1}`,
+          details: stepMsg,
+        })),
+      });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'AI error';
-      setAiSuggestion({ fixedCode: code, rationale: msg });
+      const msg = e instanceof Error ? e.message : 'Agent error';
+      setAgentResult({
+        success: false,
+        message: msg,
+        stepsUsed: 0,
+      });
     } finally {
-      setAiLoading(false);
+      setAgentLoading(false);
     }
   }
 
-  function acceptAISuggestion() {
-    if (!aiSuggestion) return;
-    setCode(aiSuggestion.fixedCode);
-    setAiSuggestion(null);
+  function acceptAgentResult() {
+    if (!agentResult?.finalCode) return;
+    setCode(agentResult.finalCode);
+    setAgentResult(null);
   }
 
   function getSvgElement(): SVGSVGElement | null {
@@ -407,11 +474,11 @@ export default function Home() {
                   onReset={() => setCode(DEFAULT_CODE)}
                   onImport={onImportFile}
                   onExport={exportMmd}
-                  aiSuggestion={aiSuggestion}
-                  onAcceptSuggestion={acceptAISuggestion}
-                  onDismissSuggestion={() => setAiSuggestion(null)}
-                  aiLoading={aiLoading}
-                  onFixWithAI={handleFixWithAI}
+                  agentResult={agentResult}
+                  onAcceptAgentResult={acceptAgentResult}
+                  onDismissAgentResult={() => setAgentResult(null)}
+                  agentLoading={agentLoading}
+                  onFixWithAgent={handleFixWithAgent}
                   isCollapsed={editorCollapsed}
                   onToggleCollapse={() => setEditorCollapsed(!editorCollapsed)}
                 />

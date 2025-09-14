@@ -6,10 +6,12 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
 
-interface AISuggestion {
-  fixedCode: string;
-  rationale?: string;
-  changes?: string[];
+interface AgentResult {
+  success: boolean;
+  message: string;
+  finalCode?: string;
+  stepsUsed?: number;
+  steps?: { action: string; details: string }[];
 }
 
 interface CodeEditorProps {
@@ -18,11 +20,11 @@ interface CodeEditorProps {
   onReset: () => void;
   onImport: (file: File) => void;
   onExport: () => void;
-  aiSuggestion: AISuggestion | null;
-  onAcceptSuggestion: () => void;
-  onDismissSuggestion: () => void;
-  aiLoading: boolean;
-  onFixWithAI: () => void;
+  agentResult?: AgentResult | null;
+  onAcceptAgentResult?: () => void;
+  onDismissAgentResult?: () => void;
+  agentLoading?: boolean;
+  onFixWithAgent?: () => void;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
 }
@@ -33,11 +35,11 @@ export function CodeEditor({
   onReset,
   onImport,
   onExport,
-  aiSuggestion,
-  onAcceptSuggestion,
-  onDismissSuggestion,
-  aiLoading,
-  onFixWithAI,
+  agentResult,
+  onAcceptAgentResult,
+  onDismissAgentResult,
+  agentLoading,
+  onFixWithAgent,
   isCollapsed = true,
   onToggleCollapse,
 }: CodeEditorProps) {
@@ -75,15 +77,17 @@ export function CodeEditor({
                   <RotateCcw className='h-3 w-3' />
                 </Button>
 
-                <Button
-                  variant='outline'
-                  size='sm'
-                  onClick={onFixWithAI}
-                  disabled={aiLoading}
-                  className='h-8 px-2 text-xs text-white bg-white dark:bg-gray-800 dark:text-white shadow-sm cursor-pointer'
-                >
-                  {aiLoading ? 'Fixing...' : '✨ Fix with AI'}
-                </Button>
+                {onFixWithAgent && (
+                  <Button
+                    variant='outline'
+                    size='sm'
+                    onClick={onFixWithAgent}
+                    disabled={agentLoading}
+                    className='h-8 px-2 text-xs text-emerald-600 border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:text-emerald-400 dark:border-emerald-800 shadow-sm cursor-pointer'
+                  >
+                    {agentLoading ? 'Thinking...' : '✨ Fix with AI'}
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -115,41 +119,82 @@ export function CodeEditor({
               />
             </div>
 
-            {/* AI Suggestion */}
-            {aiSuggestion && (
-              <div className='rounded-md border border-emerald-200 bg-emerald-50/50 dark:border-emerald-800 dark:bg-emerald-950/20 p-3 space-y-3'>
+            {/* AI Agent Result */}
+            {agentResult && (
+              <div
+                className={`rounded-md border p-3 space-y-3 ${
+                  agentResult.success
+                    ? 'border-blue-200 bg-blue-50/50 dark:border-blue-800 dark:bg-blue-950/20'
+                    : 'border-red-200 bg-red-50/50 dark:border-red-800 dark:bg-red-950/20'
+                }`}
+              >
                 <div className='flex items-center justify-between'>
-                  <span className='text-sm font-medium text-emerald-800 dark:text-emerald-200'>
-                    AI Suggestion
+                  <span
+                    className={`text-sm font-medium ${
+                      agentResult.success
+                        ? 'text-blue-800 dark:text-blue-200'
+                        : 'text-red-800 dark:text-red-200'
+                    }`}
+                  >
+                    🤖 Agent Result{' '}
+                    {agentResult.stepsUsed &&
+                      `(${agentResult.stepsUsed} steps)`}
                   </span>
                   <div className='flex gap-2'>
-                    <Button
-                      size='sm'
-                      onClick={onAcceptSuggestion}
-                      className='h-7 px-2 text-xs bg-emerald-600 hover:bg-emerald-700'
-                    >
-                      Apply
-                    </Button>
-                    <Button
-                      variant='ghost'
-                      size='sm'
-                      onClick={onDismissSuggestion}
-                      className='h-7 px-2 text-xs'
-                    >
-                      Dismiss
-                    </Button>
+                    {agentResult.success &&
+                      agentResult.finalCode &&
+                      onAcceptAgentResult && (
+                        <Button
+                          size='sm'
+                          onClick={onAcceptAgentResult}
+                          className='h-7 px-2 text-xs bg-blue-600 hover:bg-blue-700'
+                        >
+                          Apply
+                        </Button>
+                      )}
+                    {onDismissAgentResult && (
+                      <Button
+                        variant='outline'
+                        size='sm'
+                        onClick={onDismissAgentResult}
+                        className='h-7 px-2 text-xs'
+                      >
+                        Dismiss
+                      </Button>
+                    )}
                   </div>
                 </div>
 
-                {aiSuggestion.rationale && (
-                  <p className='text-xs text-muted-foreground'>
-                    {aiSuggestion.rationale}
-                  </p>
+                <p className='text-xs text-muted-foreground'>
+                  {agentResult.message}
+                </p>
+
+                {agentResult.finalCode && (
+                  <pre className='text-xs bg-background/50 p-2 rounded border overflow-auto max-h-32'>
+                    {agentResult.finalCode}
+                  </pre>
                 )}
 
-                <pre className='text-xs bg-background/50 p-2 rounded border overflow-auto max-h-32'>
-                  {aiSuggestion.fixedCode}
-                </pre>
+                {agentResult.steps && agentResult.steps.length > 0 && (
+                  <details className='text-xs'>
+                    <summary className='cursor-pointer text-muted-foreground hover:text-foreground'>
+                      View Steps ({agentResult.steps.length})
+                    </summary>
+                    <div className='mt-2 space-y-1'>
+                      {agentResult.steps.map((step, index) => (
+                        <div
+                          key={index}
+                          className='p-2 bg-background/30 rounded border text-xs'
+                        >
+                          <div className='font-medium'>{step.action}</div>
+                          <div className='text-muted-foreground'>
+                            {step.details}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
               </div>
             )}
           </div>
