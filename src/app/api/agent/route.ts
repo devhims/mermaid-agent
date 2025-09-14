@@ -40,9 +40,9 @@ async function validateMermaidCode(
     const result = await mermaid.parse(sanitized, { suppressErrors: false });
     console.log('✅ Mermaid validation passed:', result);
     return { isValid: true };
-  } catch (error: any) {
+  } catch (error: unknown) {
     const errorMessage =
-      error?.message || error?.toString() || 'Unknown parse error';
+      error instanceof Error ? error.message : String(error ?? 'Unknown parse error');
     console.log('❌ Mermaid validation failed:', errorMessage);
     return { isValid: false, error: errorMessage };
   }
@@ -225,9 +225,10 @@ export async function POST(req: NextRequest) {
         if (steps.length >= maxSteps) return true;
         const last = steps[steps.length - 1];
         // stop if any tool result in last step is validated
-        const ok = (last.toolResults || []).some(
-          (tr: any) => tr?.output?.validated === true
-        );
+        const ok = (last.toolResults || []).some((tr: unknown) => {
+          const obj = tr as { output?: { validated?: boolean } };
+          return obj.output?.validated === true;
+        });
         return ok;
       },
       system: `You are an expert at fixing Mermaid diagram syntax errors.
@@ -253,15 +254,21 @@ ${actualError}
     });
 
     // Collect attempts from tool results
+    type Attempt = {
+      fixedCode?: string;
+      explanation?: string;
+      validated?: boolean;
+      validationError?: string;
+    };
     const attempts = result.steps
-      .flatMap((s: any) => s.toolResults || [])
-      .map((tr: any) => tr.output)
-      .filter(Boolean);
+      .flatMap((s: unknown) => (s as { toolResults?: Array<{ output?: unknown }> }).toolResults || [])
+      .map((tr) => (tr.output as Attempt) || ({} as Attempt))
+      .filter(Boolean) as Attempt[];
 
     // Find last successful attempt, or last attempt overall
     const success = [...attempts]
       .reverse()
-      .find((a: any) => a?.validated === true);
+      .find((a) => a?.validated === true);
     const last = attempts.at(-1);
 
     if (success) {
