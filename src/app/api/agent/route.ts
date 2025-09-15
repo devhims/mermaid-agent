@@ -1,4 +1,19 @@
-import { generateText, tool } from 'ai';
+/**
+ * Modernized Mermaid Code Fixing API Route using AI SDK v5 Best Practices
+ *
+ * Key modernizations applied:
+ * - Using streamText() instead of generateText() for better performance and streaming capabilities
+ * - Modern stopWhen conditions with stepCountIs() helper function
+ * - Proper onError and onFinish lifecycle callbacks
+ * - Enhanced tool definitions with outputSchema for type safety
+ * - Modern usage tracking with totalUsage instead of deprecated usage
+ * - Proper error handling and metadata exposure
+ *
+ * This implementation follows AI SDK v5 best practices while maintaining backward compatibility
+ * with the existing frontend interface.
+ */
+
+import { generateText, streamText, tool, stepCountIs } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
 import { NextRequest } from 'next/server';
@@ -42,17 +57,21 @@ async function validateMermaidCode(
     return { isValid: true };
   } catch (error: unknown) {
     const errorMessage =
-      error instanceof Error ? error.message : String(error ?? 'Unknown parse error');
+      error instanceof Error
+        ? error.message
+        : String(error ?? 'Unknown parse error');
     console.log('❌ Mermaid validation failed:', errorMessage);
     return { isValid: false, error: errorMessage };
   }
 }
 
-// Request schema
+// Request schema - AI SDK v5 enhanced
 const RequestSchema = z.object({
   code: z.string(),
   error: z.string().nullable(),
   step: z.number().default(1),
+  // Future streaming support (AI SDK v5 ready)
+  stream: z.boolean().optional().default(false),
 });
 
 export async function POST(req: NextRequest) {
@@ -74,12 +93,13 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const { code, error, step } = parsed.data;
+    const { code, error, step, stream } = parsed.data;
 
     console.log(`🤖 Agent Step ${step}:`, {
       codeLength: code.length,
       hasError: !!error,
       errorPreview: error?.substring(0, 100) || 'No error',
+      streamingEnabled: stream,
     });
 
     // Validate with real Mermaid parser
@@ -115,8 +135,20 @@ export async function POST(req: NextRequest) {
           .string()
           .describe('Explanation of what was fixed and why'),
       }),
+      // Modern AI SDK v5 - outputSchema for type safety
+      outputSchema: z.object({
+        fixedCode: z.string(),
+        explanation: z.string(),
+        validated: z.boolean(),
+        validationError: z.string().optional(),
+      }),
       execute: async ({ fixedCode, explanation }) => {
+        console.log('🔧 Tool called: fixMermaidCode');
+        console.log('📝 Explanation:', explanation);
         const validation = await validateMermaidCode(fixedCode);
+        console.log(
+          `🔍 Validation result: ${validation.isValid ? 'PASSED' : 'FAILED'}`
+        );
         return {
           fixedCode,
           explanation,
@@ -129,6 +161,7 @@ export async function POST(req: NextRequest) {
     // Fast path: single-line replacement suggestion using the exact parser error line
     const lineMatch = /line\s+(\d+)/i.exec(actualError);
     if (lineMatch) {
+      console.log('🚀 Taking FAST PATH: Single-line fix attempt');
       const lineNumber = Math.max(1, parseInt(lineMatch[1], 10));
       const lines = code
         .replace(/\r\n?/g, '\n')
@@ -154,6 +187,15 @@ export async function POST(req: NextRequest) {
               'Brief explanation of the change and why it fixes the error.'
             ),
         }),
+        // Modern AI SDK v5 - outputSchema for type safety
+        outputSchema: z.object({
+          replacement: z.string(),
+          explanation: z.string(),
+        }),
+        execute: async ({ replacement, explanation }) => {
+          // In v5, we can return the validated output
+          return { replacement, explanation };
+        },
       });
 
       try {
@@ -208,28 +250,45 @@ export async function POST(req: NextRequest) {
         }
       } catch (e) {
         console.warn(
-          'Line-level fix attempt failed; falling back to multi-step.',
+          '⚠️ Fast path failed; falling back to multi-step approach.',
           e
         );
       }
     }
 
     // Multi-step tool usage: allow the model to iterate with validation feedback
-    const maxSteps = 6;
-    const result = await generateText({
+    console.log('🔄 Starting MULTI-STEP approach with up to 6 steps');
+    const result = await streamText({
       model: openai('gpt-4o-mini'),
       tools: { fixMermaidCode },
-      // Let the model decide when to stop; we stop when validation passes or step cap reached
-      stopWhen: async ({ steps }) => {
-        // stop if step cap reached
-        if (steps.length >= maxSteps) return true;
-        const last = steps[steps.length - 1];
-        // stop if any tool result in last step is validated
-        const ok = (last.toolResults || []).some((tr: unknown) => {
-          const obj = tr as { output?: { validated?: boolean } };
-          return obj.output?.validated === true;
-        });
-        return ok;
+      // Modern AI SDK v5 stopWhen with proper helper function
+      stopWhen: [
+        stepCountIs(6), // Stop after 6 steps max
+        ({ steps }) => {
+          // Stop if any tool result in last step is validated
+          const lastStep = steps[steps.length - 1];
+          return (lastStep?.toolResults || []).some((tr) => {
+            const output = tr.output as { validated?: boolean };
+            return output?.validated === true;
+          });
+        },
+      ],
+      // Modern error handling with onError callback
+      onError: ({ error }) => {
+        console.error('AI SDK Error during Mermaid fixing:', error);
+      },
+      // Lifecycle callback for completion
+      onFinish: ({ text, totalUsage, steps }) => {
+        console.log(
+          `🎯 Multi-step process completed in ${steps.length} AI steps. Usage:`,
+          totalUsage
+        );
+        console.log(
+          `📊 Total tool calls across all steps: ${steps.reduce(
+            (acc, step) => acc + (step.toolCalls?.length || 0),
+            0
+          )}`
+        );
       },
       system: `You are an expert at fixing Mermaid diagram syntax errors.
 
@@ -253,22 +312,40 @@ ${actualError}
 `,
     });
 
-    // Collect attempts from tool results
+    // Wait for the stream to complete and get the final result
+    const finalResult = await Promise.all([
+      result.text,
+      result.steps,
+      result.totalUsage,
+      result.finishReason,
+    ]);
+
+    const [finalText, steps, totalUsage, finishReason] = finalResult;
+
+    // AI SDK v5 Feature: Streaming response option for future frontend support
+    if (stream) {
+      // For future streaming implementation using toUIMessageStreamResponse()
+      // This would return: return result.toUIMessageStreamResponse();
+      console.log(
+        '📡 Streaming mode requested but not yet implemented in frontend'
+      );
+    }
+
+    // Collect attempts from tool results using modern AI SDK v5 structure
     type Attempt = {
       fixedCode?: string;
       explanation?: string;
       validated?: boolean;
       validationError?: string;
     };
-    const attempts = result.steps
-      .flatMap((s: unknown) => (s as { toolResults?: Array<{ output?: unknown }> }).toolResults || [])
-      .map((tr) => (tr.output as Attempt) || ({} as Attempt))
+
+    const attempts = steps
+      .flatMap((step) => step.toolResults || [])
+      .map((toolResult) => toolResult.output as Attempt)
       .filter(Boolean) as Attempt[];
 
     // Find last successful attempt, or last attempt overall
-    const success = [...attempts]
-      .reverse()
-      .find((a) => a?.validated === true);
+    const success = [...attempts].reverse().find((a) => a?.validated === true);
     const last = attempts.at(-1);
 
     if (success) {
@@ -283,8 +360,22 @@ ${actualError}
           step: step + attempts.length,
           validated: true,
           attempts,
+          // Modern AI SDK v5 usage information
+          usage: {
+            totalTokens: totalUsage?.totalTokens,
+            inputTokens: totalUsage?.inputTokens,
+            outputTokens: totalUsage?.outputTokens,
+          },
+          finishReason,
+          stepsCount: steps.length,
         }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-AI-SDK-Version': '5.0',
+          },
+        }
       );
     }
 
@@ -299,20 +390,48 @@ ${actualError}
           validated: false,
           validationError: last.validationError,
           attempts,
+          // Modern AI SDK v5 usage information
+          usage: {
+            totalTokens: totalUsage?.totalTokens,
+            inputTokens: totalUsage?.inputTokens,
+            outputTokens: totalUsage?.outputTokens,
+          },
+          finishReason,
+          stepsCount: steps.length,
         }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-AI-SDK-Version': '5.0',
+          },
+        }
       );
     }
 
-    // Model did not call the tool
+    // Model did not call the tool - AI SDK v5 enhanced error response
     return new Response(
       JSON.stringify({
         success: false,
         message: 'Model did not call the fix tool',
         step: step,
         validationError: actualError,
+        // Modern AI SDK v5 usage information
+        usage: {
+          totalTokens: totalUsage?.totalTokens,
+          inputTokens: totalUsage?.inputTokens,
+          outputTokens: totalUsage?.outputTokens,
+        },
+        finishReason,
+        stepsCount: steps.length,
       }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-AI-SDK-Version': '5.0',
+        },
+      }
     );
   } catch (err: unknown) {
     console.error('/api/agent error', err);
