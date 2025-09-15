@@ -21,9 +21,18 @@ interface CodeEditorProps {
   onImport: (file: File) => void;
   onExport: () => void;
   agentResult?: AgentResult | null;
+  agentStream?: {
+    steps: { action: string; details: string }[];
+    message?: string;
+    finalCode?: string;
+    validated?: boolean;
+    usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number };
+  } | null;
   onAcceptAgentResult?: () => void;
   onDismissAgentResult?: () => void;
+  onStopAgent?: () => void;
   agentLoading?: boolean;
+  agentStreaming?: boolean;
   onFixWithAgent?: () => void;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
@@ -36,19 +45,29 @@ export function CodeEditor({
   onImport,
   onExport,
   agentResult,
+  agentStream,
   onAcceptAgentResult,
   onDismissAgentResult,
+  onStopAgent,
   agentLoading,
+  agentStreaming,
   onFixWithAgent,
   isCollapsed = true,
   onToggleCollapse,
 }: CodeEditorProps) {
   const [isOpen, setIsOpen] = useState(!isCollapsed);
+  const [stepsOpen, setStepsOpen] = useState(true);
 
   // Sync internal state with external collapsed state
   useEffect(() => {
     setIsOpen(!isCollapsed);
   }, [isCollapsed]);
+
+  // Auto-minimize steps when streaming completes
+  useEffect(() => {
+    if (agentStreaming) setStepsOpen(true);
+    else setStepsOpen(false);
+  }, [agentStreaming]);
 
   const handleToggle = () => {
     const newState = !isOpen;
@@ -119,30 +138,38 @@ export function CodeEditor({
               />
             </div>
 
-            {/* AI Agent Result */}
-            {agentResult && (
+            {/* AI Agent Result (streaming and final) */}
+            {(agentStream || agentResult) && (
               <div
-                className={`rounded-md border p-3 space-y-3 ${
-                  agentResult.success
+                className={`rounded-md border p-3 space-y-3 max-h-64 overflow-auto ${
+                  agentStream?.validated || agentResult?.success
                     ? 'border-blue-200 bg-blue-50/50 dark:border-blue-800 dark:bg-blue-950/20'
-                    : 'border-red-200 bg-red-50/50 dark:border-red-800 dark:bg-red-950/20'
+                    : 'border-yellow-200 bg-yellow-50/50 dark:border-yellow-800 dark:bg-yellow-950/20'
                 }`}
               >
                 <div className='flex items-center justify-between'>
                   <span
                     className={`text-sm font-medium ${
-                      agentResult.success
+                      agentStream?.validated || agentResult?.success
                         ? 'text-blue-800 dark:text-blue-200'
-                        : 'text-red-800 dark:text-red-200'
+                        : 'text-yellow-800 dark:text-yellow-200'
                     }`}
                   >
-                    🤖 Agent Result{' '}
-                    {agentResult.stepsUsed &&
-                      `(${agentResult.stepsUsed} steps)`}
+                    🤖 Agent {agentStream ? '(Live)' : 'Result'}{' '}
+                    {agentResult?.stepsUsed && `(${agentResult.stepsUsed} steps)`}
                   </span>
                   <div className='flex gap-2'>
-                    {agentResult.success &&
-                      agentResult.finalCode &&
+                    <Button
+                      variant='outline'
+                      size='sm'
+                      onClick={onStopAgent}
+                      disabled={!agentLoading}
+                      className='h-7 px-2 text-xs'
+                    >
+                      Stop
+                    </Button>
+                    {((agentStream?.validated && agentStream?.finalCode) ||
+                      (agentResult?.success && agentResult?.finalCode)) &&
                       onAcceptAgentResult && (
                         <Button
                           size='sm'
@@ -165,35 +192,61 @@ export function CodeEditor({
                   </div>
                 </div>
 
-                <p className='text-xs text-muted-foreground'>
-                  {agentResult.message}
-                </p>
+                {/* Live streaming message */}
+                {agentStream?.message && (
+                  <p className='text-xs text-muted-foreground whitespace-pre-wrap'>
+                    {agentStream.message}
+                  </p>
+                )}
 
-                {agentResult.finalCode && (
+                {/* Final summary message */}
+                {agentResult?.message && !agentStream && (
+                  <p className='text-xs text-muted-foreground'>
+                    {agentResult.message}
+                  </p>
+                )}
+
+                {/* Final code (live or final) */}
+                {(agentStream?.finalCode || agentResult?.finalCode) && (
                   <pre className='text-xs bg-background/50 p-2 rounded border overflow-auto max-h-32'>
-                    {agentResult.finalCode}
+                    {agentStream?.finalCode || agentResult?.finalCode}
                   </pre>
                 )}
 
-                {agentResult.steps && agentResult.steps.length > 0 && (
-                  <details className='text-xs'>
+                {/* Steps (live or final) */}
+                {((agentStream && agentStream.steps?.length > 0) ||
+                  (agentResult?.steps && agentResult.steps.length > 0)) && (
+                  <details
+                    className='text-xs'
+                    open={stepsOpen}
+                    onToggle={(e) => setStepsOpen((e.target as HTMLDetailsElement).open)}
+                  >
                     <summary className='cursor-pointer text-muted-foreground hover:text-foreground'>
-                      View Steps ({agentResult.steps.length})
+                      View Steps ({agentStream?.steps?.length || agentResult?.steps?.length})
                     </summary>
                     <div className='mt-2 space-y-1'>
-                      {agentResult.steps.map((step, index) => (
-                        <div
-                          key={index}
-                          className='p-2 bg-background/30 rounded border text-xs'
-                        >
-                          <div className='font-medium'>{step.action}</div>
-                          <div className='text-muted-foreground'>
-                            {step.details}
+                      {(agentStream?.steps || agentResult?.steps || []).map(
+                        (step, index) => (
+                          <div
+                            key={index}
+                            className='p-2 bg-background/30 rounded border text-xs'
+                          >
+                            <div className='font-medium'>{step.action}</div>
+                            <div className='text-muted-foreground whitespace-pre-wrap'>
+                              {step.details}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        )
+                      )}
                     </div>
                   </details>
+                )}
+
+                {/* Usage footer */}
+                {agentStream?.usage && (
+                  <div className='pt-2 mt-2 border-t text-[10px] text-muted-foreground'>
+                    Usage — input: {agentStream.usage.inputTokens ?? '-'}, output: {agentStream.usage.outputTokens ?? '-'}, total: {agentStream.usage.totalTokens ?? '-'}
+                  </div>
                 )}
               </div>
             )}

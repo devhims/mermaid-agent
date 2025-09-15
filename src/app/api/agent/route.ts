@@ -13,7 +13,7 @@
  * with the existing frontend interface.
  */
 
-import { streamText, tool, stepCountIs } from 'ai';
+import { streamText, tool, stepCountIs, convertToModelMessages, type UIMessage } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
 import { NextRequest } from 'next/server';
@@ -86,6 +86,90 @@ export async function POST(req: NextRequest) {
     }
 
     const json = await req.json().catch(() => ({}));
+
+    // Branch 1: AI SDK UI chat transport streaming (preferred for live tool/step updates)
+    if (json && Array.isArray(json.messages)) {
+      const messages = json.messages as UIMessage[];
+
+      // Define tool in this branch so it is available for streaming execution
+      const fixMermaidCode = tool({
+        description:
+          'Submit a corrected Mermaid code snippet. The tool validates it and returns whether it is valid along with any parse error.',
+        inputSchema: z.object({
+          fixedCode: z.string().describe('The corrected Mermaid code'),
+          explanation: z
+            .string()
+            .describe('Explanation of what was fixed and why'),
+        }),
+        outputSchema: z.object({
+          fixedCode: z.string(),
+          explanation: z.string(),
+          validated: z.boolean(),
+          validationError: z.string().optional(),
+        }),
+        execute: async ({ fixedCode, explanation }) => {
+          const validation = await validateMermaidCode(fixedCode);
+          return {
+            fixedCode,
+            explanation,
+            validated: validation.isValid,
+            validationError: validation.error,
+          };
+        },
+      });
+
+      const result = streamText({
+        model: openai('gpt-4o-mini'),
+        messages: convertToModelMessages(messages),
+        tools: { fixMermaidCode },
+        stopWhen: [
+          stepCountIs(6),
+          ({ steps }) => {
+            const lastStep = steps[steps.length - 1];
+            return (lastStep?.toolResults || []).some((tr) => {
+              const output = tr.output as { validated?: boolean };
+              return output?.validated === true;
+            });
+          },
+        ],
+        onError: ({ error }) => {
+          console.error('AI SDK Error during Mermaid fixing (stream):', error);
+        },
+        system: `You are an expert at fixing Mermaid diagram syntax errors.
+
+Use the fixMermaidCode tool to submit a minimally changed corrected code snippet. The tool validates with the REAL Mermaid parser and returns { validated, validationError }.
+
+Stream short status updates for each step. When validated: true is returned, do not make further tool calls, and announce success.`,
+      });
+
+      const errorHandler = (error: unknown) => {
+        if (error == null) return 'unknown error';
+        if (typeof error === 'string') return error;
+        if (error instanceof Error) return error.message;
+        try {
+          return JSON.stringify(error);
+        } catch {
+          return 'An error occurred';
+        }
+      };
+
+      return result.toUIMessageStreamResponse({
+        onError: errorHandler,
+        messageMetadata: ({ part }) => {
+          if (part.type === 'start') {
+            return { createdAt: Date.now(), model: 'gpt-4o-mini' };
+          }
+          if (part.type === 'finish') {
+            return {
+              totalTokens: part.totalUsage?.totalTokens,
+              inputTokens: part.totalUsage?.inputTokens,
+              outputTokens: part.totalUsage?.outputTokens,
+            };
+          }
+          return undefined;
+        },
+      });
+    }
     const parsed = RequestSchema.safeParse(json);
     if (!parsed.success) {
       return new Response(JSON.stringify({ error: parsed.error.flatten() }), {
@@ -363,3 +447,6 @@ export async function GET() {
     }
   );
 }
+
+// Allow streaming responses up to 30 seconds
+export const maxDuration = 30;

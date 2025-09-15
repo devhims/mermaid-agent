@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 import { useTheme } from 'next-themes';
 import { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
@@ -13,6 +13,19 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Badge } from '@/components/ui/badge';
+import { useChat } from '@ai-sdk/react';
+import {
+  DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithToolCalls,
+} from 'ai';
+
+type AgentStream = {
+  steps: { action: string; details: string }[];
+  message?: string;
+  finalCode?: string;
+  validated?: boolean;
+  usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number };
+} | null;
 
 const DEFAULT_CODE = `%% Mermaid Viewer — sample
 graph TD
@@ -36,6 +49,7 @@ export default function Home() {
   } | null>(null);
   const [editorCollapsed, setEditorCollapsed] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
+  const [hideAgentPanel, setHideAgentPanel] = useState(false);
 
   const { resolvedTheme } = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -47,6 +61,20 @@ export default function Home() {
   });
 
   const debouncedCode = useDebounced(code, 100);
+
+  // AI SDK v5 streaming (tool + steps) — not conversational, single-turn only
+  const {
+    messages,
+    status,
+    sendMessage,
+    stop: stopChat,
+    setMessages,
+  } = useChat({
+    transport: new DefaultChatTransport({ api: '/api/agent' }),
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+  });
+  const chatLoading = status === 'submitted' || status === 'streaming';
+  const isStreaming = chatLoading;
 
   // Clear error state when code changes to ensure diagram updates
   useEffect(() => {
@@ -217,101 +245,134 @@ export default function Home() {
 
   async function handleFixWithAgent() {
     try {
-      setAgentLoading(true);
       setAgentResult(null);
-
-      let currentCode = code;
-      let currentError = error;
-      let step = 1;
-      const maxSteps = 5;
-      const steps: string[] = [];
-
-      let fixSummary: string | undefined;
-      while (currentError && step <= maxSteps) {
-        console.log(`🔄 Agent Step ${step}:`, {
-          currentError,
-          codeLength: currentCode.length,
-        });
-
-        const res = await fetch('/api/agent', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            code: currentCode,
-            error: currentError,
-            step: step,
-          }),
-        });
-
-        if (!res.ok) {
-          const t = await res.text();
-          throw new Error(t || 'Agent fix failed');
-        }
-
-        const data = await res.json();
-        steps.push(`Step ${step}: ${data.message}`);
-        fixSummary = data.message || fixSummary;
-
-        if (!data.success) {
-          throw new Error(data.message || 'Agent failed to generate fix');
-        }
-
-        // Apply the fix
-        currentCode = data.fixedCode;
-        setCode(currentCode); // Update UI immediately to show progress
-
-        // Use backend validation results
-        if (data.validated) {
-          currentError = null; // Backend confirmed it's valid
-          console.log(`✅ Step ${step}: Backend validation passed`);
-        } else {
-          currentError = data.validationError || 'Validation failed';
-          console.log(
-            `❌ Step ${step}: Backend validation failed:`,
-            currentError
-          );
-        }
-
-        // If agent says it's complete or no more errors, we're done
-        if (data.isComplete || !currentError) {
-          break;
-        }
-
-        step++;
-      }
-
-      // Final result
-      const wasSuccessful = !currentError;
-      setAgentResult({
-        success: wasSuccessful,
-        message: wasSuccessful
-          ? fixSummary ||
-            `✅ Successfully fixed in ${step} step${step > 1 ? 's' : ''}!`
-          : `⚠️ Made progress in ${step} steps but still has issues. Final error: ${currentError}`,
-        finalCode: currentCode,
-        stepsUsed: step,
-        steps: steps.map((stepMsg, index) => ({
-          action: `Step ${index + 1}`,
-          details: stepMsg,
-        })),
+      setHideAgentPanel(false);
+      setAgentLoading(true);
+      // Kick off a single-turn streaming request that includes the current code and known error
+      const parserError = error || 'Unknown or not provided';
+      // Ensure only the latest message is sent to reduce tokens
+      setMessages([]);
+      await sendMessage({
+        text: `Fix this Mermaid diagram. Current code and real parser error (if any):\n\nCurrent Code:\n\n\`\`\`mermaid\n${code}\n\`\`\`\n\nParser Error:\n${parserError}`,
       });
-    } catch (e: unknown) {
+    } catch (e) {
       const msg = e instanceof Error ? e.message : 'Agent error';
-      setAgentResult({
-        success: false,
-        message: msg,
-        stepsUsed: 0,
-      });
+      setAgentResult({ success: false, message: msg, stepsUsed: 0 });
     } finally {
       setAgentLoading(false);
     }
   }
 
+  // Derive live streaming info from messages (last assistant message)
+  const agentStream: AgentStream = useMemo(() => {
+    try {
+      const lastAssistant = [...messages]
+        .reverse()
+        .find((m) => m.role === 'assistant');
+      if (!lastAssistant) return null;
+
+      let stepIndex = 0;
+      const steps: { action: string; details: string }[] = [];
+      let messageText = '';
+      let finalCode: string | undefined;
+      let validated = false;
+      const usage = lastAssistant.metadata as
+        | { totalTokens?: number; inputTokens?: number; outputTokens?: number }
+        | undefined;
+
+      for (const part of lastAssistant.parts as any[]) {
+        switch (part.type) {
+          case 'text':
+            messageText += part.text;
+            break;
+          case 'step-start':
+            stepIndex += 1;
+            steps.push({ action: `Step ${stepIndex}`, details: 'Starting…' });
+            break;
+          case 'dynamic-tool':
+          case 'tool-fixMermaidCode': {
+            const name =
+              part.type === 'dynamic-tool' ? part.toolName : 'fixMermaidCode';
+            if (name !== 'fixMermaidCode') break;
+            const callId = part.toolCallId as string;
+            switch (part.state) {
+              case 'input-streaming':
+                steps.push({
+                  action: `Tool: fixMermaidCode (${callId})`,
+                  details: 'Preparing input…',
+                });
+                break;
+              case 'input-available':
+                steps.push({
+                  action: `Tool: fixMermaidCode (${callId})`,
+                  details: 'Submitting candidate fix for validation…',
+                });
+                break;
+              case 'output-available': {
+                const out = part.output as {
+                  fixedCode?: string;
+                  validated?: boolean;
+                  validationError?: string;
+                  explanation?: string;
+                };
+                finalCode = out?.fixedCode ?? finalCode;
+                validated = !!out?.validated;
+                const status = out?.validated
+                  ? 'PASSED ✅'
+                  : `FAILED ❌${
+                      out?.validationError ? ` — ${out.validationError}` : ''
+                    }`;
+                steps.push({
+                  action: `Tool Result (${callId})`,
+                  details: `${status}${
+                    out?.explanation ? `\n${out.explanation}` : ''
+                  }`,
+                });
+                break;
+              }
+              case 'output-error':
+                steps.push({
+                  action: `Tool Error (${callId})`,
+                  details: String(part.errorText || 'Unknown error'),
+                });
+                break;
+            }
+            break;
+          }
+        }
+      }
+
+      return {
+        steps,
+        message: messageText || undefined,
+        finalCode,
+        validated,
+        usage,
+      };
+    } catch {
+      return null;
+    }
+  }, [messages]);
+
   function acceptAgentResult() {
-    if (!agentResult?.finalCode) return;
-    setCode(agentResult.finalCode);
+    const final = agentResult?.finalCode || agentStream?.finalCode;
+    if (!final) return;
+    setCode(final);
     setAgentResult(null);
+    setHideAgentPanel(true);
   }
+
+  // Concise summary for preview overlay
+  const previewSummary = useMemo(() => {
+    if (!(agentStream?.validated && agentStream?.message)) return undefined;
+    const raw =
+      agentStream.message
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)[0] || '';
+    const s = raw.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '');
+    return s.length > 160 ? s.slice(0, 157) + '…' : s;
+  }, [agentStream]);
 
   function getSvgElement(): SVGSVGElement | null {
     const svg = containerRef.current?.querySelector('svg');
@@ -475,9 +536,17 @@ export default function Home() {
                   onImport={onImportFile}
                   onExport={exportMmd}
                   agentResult={agentResult}
+                  agentStream={!hideAgentPanel ? agentStream : null}
                   onAcceptAgentResult={acceptAgentResult}
-                  onDismissAgentResult={() => setAgentResult(null)}
-                  agentLoading={agentLoading}
+                  onDismissAgentResult={() => {
+                    setAgentResult(null);
+                    setHideAgentPanel(true);
+                  }}
+                  onStopAgent={() => {
+                    stopChat();
+                  }}
+                  agentLoading={agentLoading || chatLoading}
+                  agentStreaming={isStreaming}
                   onFixWithAgent={handleFixWithAgent}
                   isCollapsed={editorCollapsed}
                   onToggleCollapse={() => setEditorCollapsed(!editorCollapsed)}
