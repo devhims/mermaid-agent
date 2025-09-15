@@ -13,7 +13,7 @@
  * with the existing frontend interface.
  */
 
-import { generateText, streamText, tool, stepCountIs } from 'ai';
+import { streamText, tool, stepCountIs } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
 import { NextRequest } from 'next/server';
@@ -158,106 +158,8 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Fast path: single-line replacement suggestion using the exact parser error line
-    const lineMatch = /line\s+(\d+)/i.exec(actualError);
-    if (lineMatch) {
-      console.log('🚀 Taking FAST PATH: Single-line fix attempt');
-      const lineNumber = Math.max(1, parseInt(lineMatch[1], 10));
-      const lines = code
-        .replace(/\r\n?/g, '\n')
-        .replace(/^\uFEFF/, '')
-        .split('\n');
-      const idx = Math.min(lines.length - 1, lineNumber - 1);
-      const targetLine = lines[idx];
-      const prev = lines[idx - 1] ?? '';
-      const next = lines[idx + 1] ?? '';
-
-      const suggestLineFix = tool({
-        description:
-          'Suggest a replacement for the single problematic Mermaid line shown. You may include newlines to split content if needed.',
-        inputSchema: z.object({
-          replacement: z
-            .string()
-            .describe(
-              'Replacement text for the problematic line. Newlines allowed.'
-            ),
-          explanation: z
-            .string()
-            .describe(
-              'Brief explanation of the change and why it fixes the error.'
-            ),
-        }),
-        // Modern AI SDK v5 - outputSchema for type safety
-        outputSchema: z.object({
-          replacement: z.string(),
-          explanation: z.string(),
-        }),
-        execute: async ({ replacement, explanation }) => {
-          // In v5, we can return the validated output
-          return { replacement, explanation };
-        },
-      });
-
-      try {
-        const { toolCalls } = await generateText({
-          model: openai('gpt-4o-mini'),
-          tools: { suggestLineFix },
-          toolChoice: 'required',
-          system:
-            'You are a precise Mermaid linter. Propose the minimal replacement for the highlighted line only, keeping context consistent.',
-          prompt: `Mermaid parse failed on line ${lineNumber}. Provide a replacement for that line only.\n\nContext lines:\n${
-            lineNumber - 1
-          }: ${prev}\n> ${lineNumber}: ${targetLine}\n${
-            lineNumber + 1
-          }: ${next}\n\nParser error:\n${actualError}\n\nReturn via suggestLineFix tool.`,
-        });
-
-        const fix = toolCalls?.[0];
-        if (fix && 'input' in fix) {
-          const { replacement, explanation } = fix.input as {
-            replacement: string;
-            explanation: string;
-          };
-
-          const replLines = replacement.replace(/\r\n?/g, '\n').split('\n');
-          const newLines = [
-            ...lines.slice(0, idx),
-            ...replLines,
-            ...lines.slice(idx + 1),
-          ];
-          const candidate = newLines.join('\n');
-          const quickValidation = await validateMermaidCode(candidate);
-          if (quickValidation.isValid) {
-            return new Response(
-              JSON.stringify({
-                success: true,
-                isComplete: true,
-                fixedCode: candidate,
-                message: `✅ ${explanation} (Replaced line ${lineNumber}; verified)`,
-                step: step + 1,
-                validated: true,
-                attempts: [
-                  {
-                    explanation,
-                    fixedCode: candidate,
-                    validated: true,
-                  },
-                ],
-              }),
-              { status: 200, headers: { 'Content-Type': 'application/json' } }
-            );
-          }
-        }
-      } catch (e) {
-        console.warn(
-          '⚠️ Fast path failed; falling back to multi-step approach.',
-          e
-        );
-      }
-    }
-
-    // Multi-step tool usage: allow the model to iterate with validation feedback
-    console.log('🔄 Starting MULTI-STEP approach with up to 6 steps');
+    // AI SDK v5 Multi-step approach: allow the model to iterate with validation feedback
+    console.log('🔄 Starting AI-powered iterative fixing with up to 6 steps');
     const result = await streamText({
       model: openai('gpt-4o-mini'),
       tools: { fixMermaidCode },
