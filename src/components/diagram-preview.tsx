@@ -6,9 +6,27 @@ import {
   TransformComponent,
   ReactZoomPanPinchRef,
 } from 'react-zoom-pan-pinch';
-import { Download, ZoomIn, ZoomOut, RotateCcw, Maximize2 } from 'lucide-react';
+import {
+  Download,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  Maximize2,
+  Palette,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  MERMAID_THEMES,
+  MERMAID_THEME_LABELS,
+  type MermaidTheme,
+} from '@/lib/mermaid-utils';
 import {
   Dialog,
   DialogContent,
@@ -30,6 +48,8 @@ interface DiagramPreviewProps {
   onResetView: () => void;
   onFitToView: () => void;
   zoomPanRef: React.RefObject<ReactZoomPanPinchRef | null>;
+  selectedTheme: MermaidTheme;
+  onThemeChange: (theme: MermaidTheme) => void;
 }
 
 export function DiagramPreview({
@@ -44,6 +64,8 @@ export function DiagramPreview({
   onResetView,
   onFitToView,
   zoomPanRef,
+  selectedTheme,
+  onThemeChange,
 }: DiagramPreviewProps) {
   const [isDownloadDialogOpen, setIsDownloadDialogOpen] = useState(false);
   const [lightPreview, setLightPreview] = useState<string | null>(null);
@@ -264,6 +286,41 @@ export function DiagramPreview({
 
           <Separator orientation='vertical' className='h-8' />
 
+          {/* Theme Selector */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant='outline'
+                size='default'
+                className='text-sm shadow-sm cursor-pointer'
+                aria-label='Select theme'
+              >
+                <Palette className='h-4 w-4 mr-1' />
+                {/* {MERMAID_THEME_LABELS[selectedTheme]} */}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align='end' className='w-fit'>
+              {MERMAID_THEMES.map((theme) => (
+                <DropdownMenuItem
+                  key={theme}
+                  onClick={() => onThemeChange(theme)}
+                  className={`cursor-pointer ${
+                    selectedTheme === theme
+                      ? 'bg-accent text-accent-foreground font-medium'
+                      : ''
+                  }`}
+                >
+                  {MERMAID_THEME_LABELS[theme]}
+                  {selectedTheme === theme && (
+                    <span className='ml-auto text-xs'>✓</span>
+                  )}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <Separator orientation='vertical' className='h-8' />
+
           {/* Download Button with Modal */}
           <Dialog
             open={isDownloadDialogOpen}
@@ -279,7 +336,7 @@ export function DiagramPreview({
               <Button
                 variant='outline'
                 size='default'
-                className='h-10 px-4 text-sm text-white bg-white dark:bg-gray-800 dark:text-white shadow-sm cursor-pointer'
+                className='text-sm shadow-sm cursor-pointer'
               >
                 <Download className='h-4 w-4' />
               </Button>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 import { useTheme } from 'next-themes';
 import { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
@@ -13,6 +13,17 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Badge } from '@/components/ui/badge';
+import { useDebounced } from '@/hooks/useDebounced';
+import {
+  sanitizeMermaid,
+  renderWithFallback,
+  MERMAID_BASE_CONFIG,
+  getMermaidConfig,
+  getDefaultThemeForMode,
+  type MermaidTheme,
+} from '@/lib/mermaid-utils';
+import { exportSvgAsPng } from '@/lib/canvas-utils';
+import { importTextFile, exportTextFile } from '@/lib/file-utils';
 
 type AgentUsage = {
   totalTokens?: number;
@@ -60,8 +71,10 @@ export default function Home() {
   const [editorCollapsed, setEditorCollapsed] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [hideAgentPanel, setHideAgentPanel] = useState(false);
-
   const { resolvedTheme } = useTheme();
+  const [selectedMermaidTheme, setSelectedMermaidTheme] =
+    useState<MermaidTheme>('default');
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const zoomPanRef = useRef<ReactZoomPanPinchRef | null>(null);
   const lastPointerRef = useRef<{ x: number; y: number; has: boolean }>({
@@ -131,13 +144,18 @@ export default function Home() {
 
   useEffect(() => {
     mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: 'loose',
+      ...MERMAID_BASE_CONFIG,
       theme: 'default', // Will be overridden per render based on UI theme
-      fontFamily:
-        'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial',
     });
   }, []);
+
+  useEffect(() => {
+    setSelectedMermaidTheme(
+      getDefaultThemeForMode(
+        resolvedTheme as 'dark' | 'light' | 'system' | undefined
+      )
+    );
+  }, [resolvedTheme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -165,34 +183,9 @@ export default function Home() {
       // Clear container content to prepare for new render
       containerRef.current.innerHTML = '';
 
-      // Use Mermaid's built-in themes based on next-themes
-      const mermaidTheme = resolvedTheme === 'dark' ? 'dark' : 'default';
-
       try {
-        // Re-initialize Mermaid with current theme and consistent spacing
-        await mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: 'loose',
-          theme: mermaidTheme,
-          flowchart: {
-            htmlLabels: true,
-            nodeSpacing: 50,
-            rankSpacing: 50,
-            padding: 12,
-            useMaxWidth: false,
-          },
-          fontFamily:
-            'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial',
-          themeVariables: {
-            fontSize: '16px',
-            lineHeight: '24px',
-            padding: 12,
-          },
-          themeCSS: `
-            .nodeLabel, .edgeLabel, .label { line-height: 1.4; }
-            foreignObject div, foreignObject span { line-height: 1.4; }
-          `,
-        });
+        // Re-initialize Mermaid with selected theme and consistent spacing
+        await mermaid.initialize(getMermaidConfig(selectedMermaidTheme));
 
         // Ensure fonts are loaded so Mermaid measures text correctly
         const fonts = (
@@ -254,7 +247,7 @@ export default function Home() {
       cancelled = true;
       if (el) el.removeEventListener('mousemove', onMove as EventListener);
     };
-  }, [debouncedCode, resolvedTheme]);
+  }, [debouncedCode, selectedMermaidTheme, resolvedTheme]);
 
   function zoomIn() {
     if (zoomPanRef.current) {
@@ -620,18 +613,6 @@ export default function Home() {
     setHideAgentPanel(true);
   }
 
-  // Concise summary for preview overlay
-  const previewSummary = useMemo(() => {
-    if (!(agentStream?.validated && agentStream?.message)) return undefined;
-    const raw =
-      agentStream.message
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean)[0] || '';
-    const s = raw.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '');
-    return s.length > 160 ? s.slice(0, 157) + '…' : s;
-  }, [agentStream]);
-
   function getSvgElement(): SVGSVGElement | null {
     const svg = containerRef.current?.querySelector('svg');
     return (svg as SVGSVGElement) || null;
@@ -640,123 +621,14 @@ export default function Home() {
   function downloadPng(bg: 'light' | 'dark' | 'transparent') {
     const svg = getSvgElement();
     if (!svg) return;
-
-    // Clone the SVG so we can safely adjust sizing without affecting the preview
-    const cloned = svg.cloneNode(true) as SVGSVGElement;
-    // Remove any panzoom-applied transforms/styles on the root element
-    cloned.removeAttribute('style');
-
-    // Compute tight bounding box of the content and add a small padding
-    const bbox = svg.getBBox();
-    const padding = 16; // px
-    const vbX = bbox.x - padding;
-    const vbY = bbox.y - padding;
-    const vbW = Math.max(1, bbox.width + padding * 2);
-    const vbH = Math.max(1, bbox.height + padding * 2);
-
-    // Force explicit viewBox/width/height so rasterization has exact dimensions
-    cloned.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
-    cloned.setAttribute('width', String(vbW));
-    cloned.setAttribute('height', String(vbH));
-    if (!cloned.getAttribute('xmlns')) {
-      cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-    }
-
-    const serializer = new XMLSerializer();
-    const source = serializer.serializeToString(cloned);
-
-    // Convert SVG to data URL to avoid CORS issues
-    const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-      source
-    )}`;
-
-    const img = new Image();
-    img.decoding = 'async';
-    img.onload = () => {
-      // Use the computed export dimensions for proper scaling
-      const exportW = vbW;
-      const exportH = vbH;
-      const scale = 2; // Higher DPI for better quality
-
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(exportW * scale));
-      canvas.height = Math.max(1, Math.round(exportH * scale));
-
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      // Enable high DPI rendering
-      ctx.scale(scale, scale);
-
-      // Fill background (skip for transparent)
-      if (bg === 'dark') {
-        ctx.fillStyle = '#0b0f1a';
-        ctx.fillRect(0, 0, exportW, exportH);
-        // Draw dotted grid to match preview
-        drawDarkGrid(ctx, exportW, exportH);
-      } else if (bg === 'light') {
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, exportW, exportH);
-      }
-
-      // Draw image with exact, unclipped dimensions
-      ctx.drawImage(img, 0, 0, exportW, exportH);
-
-      // Convert to blob and download
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) return;
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = `mermaid-diagram-${bg}.png`;
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-        },
-        'image/png',
-        1.0
-      );
-    };
-    img.onerror = () => {
-      console.error('Failed to load SVG image');
-    };
-    img.src = svgDataUrl;
+    exportSvgAsPng(svg, bg);
   }
-
-  function drawDarkGrid(
-    ctx: CanvasRenderingContext2D,
-    width: number,
-    height: number
-  ) {
-    const spacing = 24; // px
-    const radius = 1; // px
-    ctx.fillStyle = 'rgba(255,255,255,0.07)';
-    for (let y = 0; y < height; y += spacing) {
-      for (let x = 0; x < width; x += spacing) {
-        ctx.beginPath();
-        ctx.arc(x + 2, y + 2, radius, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  }
-
-  // Zoom handlers removed; handled in DiagramPreview
 
   function onImportFile(file: File) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = typeof reader.result === 'string' ? reader.result : '';
-      setCode(text);
-    };
-    reader.readAsText(file);
+    importTextFile(file, setCode);
   }
   function exportMmd() {
-    const blob = new Blob([code], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'diagram.mmd';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    exportTextFile(code, 'diagram.mmd');
   }
 
   return (
@@ -829,6 +701,8 @@ export default function Home() {
               onResetView={resetView}
               onFitToView={fitToView}
               zoomPanRef={zoomPanRef}
+              selectedTheme={selectedMermaidTheme}
+              onThemeChange={setSelectedMermaidTheme}
             />
           </ResizablePanel>
         </ResizablePanelGroup>
@@ -853,79 +727,4 @@ export default function Home() {
       </footer>
     </div>
   );
-}
-
-function useDebounced<T>(value: T, delay = 200) {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const id = setTimeout(() => setV(value), delay);
-    return () => clearTimeout(id);
-  }, [value, delay]);
-  return v;
-}
-
-function sanitizeMermaid(input: string): string {
-  // Normalize newlines and trim overall
-  let text = input
-    .replace(/\r\n?/g, '\n')
-    .replace(/^\uFEFF/, '')
-    .trim();
-  // Extract fenced code if present
-  const fence = /```(?:\s*mermaid)?\s*([\s\S]*?)```/i.exec(text);
-  if (fence && fence[1]) text = fence[1];
-  // Remove zero-width and bidi control characters globally
-  const INVISIBLES =
-    /[\u200B-\u200D\uFEFF\u2060\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
-  text = text.replace(INVISIBLES, '');
-  // Trim each line's leading/trailing spaces
-  text = text
-    .split('\n')
-    .map((l) => l.replace(/^\s+|\s+$/g, ''))
-    .join('\n')
-    .trim();
-  return text;
-}
-
-async function renderWithFallback(code: string): Promise<{ svg: string }> {
-  // Primary attempt
-  try {
-    await mermaid.parse(code);
-    return await mermaid.render('mermaid-preview', code);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!/No diagram type detected/i.test(msg)) throw err;
-
-    // Fallback 1: switch between flowchart <-> graph
-    const firstLine = code.split(/\n/).find((l) => l.trim().length > 0) || '';
-    const [kw, dir] = firstLine.trim().split(/\s+/);
-    const body = code.split(/\n/).slice(1).join('\n');
-    if (/^flowchart$/i.test(kw) && dir) {
-      const alt = `graph ${dir}\n${body}`.trim();
-      try {
-        await mermaid.parse(alt);
-        return await mermaid.render('mermaid-preview', alt);
-      } catch {}
-    } else if (/^graph$/i.test(kw) && dir) {
-      const alt = `flowchart ${dir}\n${body}`.trim();
-      try {
-        await mermaid.parse(alt);
-        return await mermaid.render('mermaid-preview', alt);
-      } catch {}
-    }
-
-    // Fallback 2: If no recognizable header, try prefixing flowchart TD
-    if (
-      !/^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|stateDiagram-v2|gantt|erDiagram|journey|pie|mindmap|timeline)\b/i.test(
-        firstLine
-      )
-    ) {
-      const alt = `flowchart TD\n${code}`;
-      try {
-        await mermaid.parse(alt);
-        return await mermaid.render('mermaid-preview', alt);
-      } catch {}
-    }
-
-    throw err;
-  }
 }
