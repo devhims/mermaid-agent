@@ -27,6 +27,12 @@ interface CodeEditorProps {
     finalCode?: string;
     validated?: boolean;
     usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number };
+    status?: {
+      label: string;
+      tone: 'progress' | 'success' | 'error';
+      detail?: string;
+      toolName?: string;
+    };
   } | null;
   onAcceptAgentResult?: () => void;
   onDismissAgentResult?: () => void;
@@ -34,6 +40,12 @@ interface CodeEditorProps {
   agentLoading?: boolean;
   agentStreaming?: boolean;
   onFixWithAgent?: () => void;
+  agentStatus?: {
+    label: string;
+    detail?: string;
+    tone: 'progress' | 'success' | 'error';
+  } | null;
+  diagramError?: string | null;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
 }
@@ -52,6 +64,8 @@ export function CodeEditor({
   agentLoading,
   agentStreaming,
   onFixWithAgent,
+  agentStatus,
+  diagramError,
   isCollapsed = true,
   onToggleCollapse,
 }: CodeEditorProps) {
@@ -75,40 +89,76 @@ export function CodeEditor({
     onToggleCollapse?.();
   };
 
+  const showFixButton = !!diagramError && !agentStreaming && !agentLoading;
+
+  const renderAgentStatus = () => {
+    if (!agentStatus && !agentStreaming && !agentLoading) return null;
+    const status = agentStatus ?? {
+      label: 'Analyzing diagram…',
+      tone: 'progress' as const,
+      detail: undefined,
+    };
+    const toneClasses =
+      status.tone === 'success'
+        ? 'bg-emerald-50/80 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200 dark:border-emerald-700'
+        : status.tone === 'error'
+        ? 'bg-amber-50/80 border-amber-200 text-amber-700 dark:bg-amber-900/20 dark:text-amber-200 dark:border-amber-800'
+        : 'bg-blue-50/80 border-blue-200 text-blue-700 dark:bg-blue-900/25 dark:text-blue-200 dark:border-blue-800';
+
+    return (
+      <div
+        className={`text-[11px] px-2.5 py-1 rounded-md border font-medium shadow-sm flex items-center gap-2 ${toneClasses}`}
+        title={status.detail && status.detail !== status.label ? status.detail : undefined}
+      >
+        <span
+          className={`inline-flex h-2 w-2 rounded-full ${
+            status.tone === 'success'
+              ? 'bg-emerald-500'
+              : status.tone === 'error'
+              ? 'bg-amber-500'
+              : 'bg-blue-500 animate-pulse'
+          }`}
+        />
+        <span>{status.label}</span>
+      </div>
+    );
+  };
+
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <div className='relative'>
         <CollapsibleContent className='space-y-4'>
           <div className='rounded-lg border bg-card/50 backdrop-blur-sm shadow-sm p-4 space-y-4'>
             {/* Header */}
-            <div className='flex items-center justify-between'>
-              <div className='flex items-center gap-2'>
-                <Code className='h-4 w-4 text-muted-foreground' />
-                <span className='text-sm font-medium'>Mermaid Code</span>
-              </div>
-              <div className='flex items-center gap-2'>
-                <Button
-                  variant='ghost'
-                  size='sm'
-                  onClick={onReset}
-                  className='h-8 px-2 text-xs cursor-pointer'
-                >
-                  <RotateCcw className='h-3 w-3' />
-                </Button>
-
-                {onFixWithAgent && (
+              <div className='flex items-center justify-between'>
+                <div className='flex items-center gap-2'>
+                  <Code className='h-4 w-4 text-muted-foreground' />
+                  <span className='text-sm font-medium'>Mermaid Code</span>
+                </div>
+                <div className='flex items-center gap-2'>
                   <Button
-                    variant='outline'
+                    variant='ghost'
                     size='sm'
-                    onClick={onFixWithAgent}
-                    disabled={agentLoading}
-                    className='h-8 px-2 text-xs text-emerald-600 border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:text-emerald-400 dark:border-emerald-800 shadow-sm cursor-pointer'
+                    onClick={onReset}
+                    className='h-8 px-2 text-xs cursor-pointer'
                   >
-                    {agentLoading ? 'Thinking...' : '✨ Fix with AI'}
+                    <RotateCcw className='h-3 w-3' />
                   </Button>
-                )}
+
+                  {onFixWithAgent && showFixButton && (
+                    <Button
+                      variant='outline'
+                      size='sm'
+                      onClick={onFixWithAgent}
+                      disabled={agentLoading}
+                      className='h-8 px-2 text-xs text-emerald-600 border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:text-emerald-400 dark:border-emerald-800 shadow-sm cursor-pointer'
+                    >
+                      ✨ Fix with AI
+                    </Button>
+                  )}
+                  {!showFixButton && renderAgentStatus()}
+                </div>
               </div>
-            </div>
 
             <Separator />
 

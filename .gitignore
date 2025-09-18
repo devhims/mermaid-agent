@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+agent-architecture.md
+AI_SDK_V5_MODERNIZATION_SUMMARY.md
+PAGE_STREAMING_UPDATES.md

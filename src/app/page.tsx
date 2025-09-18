@@ -13,19 +13,36 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Badge } from '@/components/ui/badge';
-import { useChat } from '@ai-sdk/react';
-import {
-  DefaultChatTransport,
-  lastAssistantMessageIsCompleteWithToolCalls,
-} from 'ai';
 
-type AgentStream = {
+type AgentUsage = {
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+};
+
+type AgentStatus = {
+  label: string;
+  detail?: string;
+  tone: 'progress' | 'success' | 'error';
+  toolName?: string;
+};
+
+type AgentStreamState = {
   steps: { action: string; details: string }[];
   message?: string;
   finalCode?: string;
   validated?: boolean;
-  usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number };
-} | null;
+  usage?: AgentUsage;
+  status?: AgentStatus;
+};
+
+type AgentResultState = {
+  success: boolean;
+  message: string;
+  finalCode?: string;
+  stepsUsed?: number;
+  steps?: { action: string; details: string }[];
+};
 
 const DEFAULT_CODE = `%% Mermaid Viewer — sample
 graph TD
@@ -39,14 +56,7 @@ graph TD
 export default function Home() {
   const [code, setCode] = useState<string>(DEFAULT_CODE);
   const [error, setError] = useState<string | null>(null);
-  const [agentLoading, setAgentLoading] = useState(false);
-  const [agentResult, setAgentResult] = useState<{
-    success: boolean;
-    message: string;
-    finalCode?: string;
-    stepsUsed?: number;
-    steps?: { action: string; details: string }[];
-  } | null>(null);
+  const [agentResult, setAgentResult] = useState<AgentResultState | null>(null);
   const [editorCollapsed, setEditorCollapsed] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [hideAgentPanel, setHideAgentPanel] = useState(false);
@@ -59,22 +69,60 @@ export default function Home() {
     y: 0,
     has: false,
   });
+  const runIdCounterRef = useRef(0);
+  const activeRunIdRef = useRef<number | null>(null);
 
   const debouncedCode = useDebounced(code, 100);
 
-  // AI SDK v5 streaming (tool + steps) — not conversational, single-turn only
-  const {
-    messages,
-    status,
-    sendMessage,
-    stop: stopChat,
-    setMessages,
-  } = useChat({
-    transport: new DefaultChatTransport({ api: '/api/agent' }),
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+  // Custom streaming implementation using JSON mode API
+  const [agentStreamingState, setAgentStreamingState] = useState<{
+    isLoading: boolean;
+    isStreaming: boolean;
+    abortController: AbortController | null;
+    runId: number | null;
+  }>({
+    isLoading: false,
+    isStreaming: false,
+    abortController: null,
+    runId: null,
   });
-  const chatLoading = status === 'submitted' || status === 'streaming';
-  const isStreaming = chatLoading;
+
+  const [agentStream, setAgentStream] = useState<AgentStreamState | null>(null);
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
+
+  const agentLoading = agentStreamingState.isLoading;
+  const isStreaming = agentStreamingState.isStreaming;
+
+  const stopAgentStreaming = () => {
+    if (agentStreamingState.abortController) {
+      agentStreamingState.abortController.abort();
+    }
+
+    activeRunIdRef.current = null;
+
+    const stoppedStatus: AgentStatus = {
+      label: 'Agent stopped',
+      detail: 'Request cancelled',
+      tone: 'error',
+    };
+
+    setAgentStreamingState((prev) => ({
+      ...prev,
+      isLoading: false,
+      isStreaming: false,
+      abortController: null,
+      runId: null,
+    }));
+
+    setAgentStatus(stoppedStatus);
+    setAgentStream((prev) => {
+      const base = prev ?? { steps: [] };
+      return {
+        ...base,
+        status: stoppedStatus,
+      };
+    });
+  };
 
   // Clear error state when code changes to ensure diagram updates
   useEffect(() => {
@@ -244,115 +292,325 @@ export default function Home() {
   }
 
   async function handleFixWithAgent() {
+    if (agentStreamingState.isStreaming) return;
+
+    let runId: number | null = null;
+    let steps: { action: string; details: string }[] = [];
+    let message = '';
+    let finalCode: string | undefined;
+    let validated: boolean | undefined;
+    let usage: AgentUsage | undefined;
+    let status: AgentStatus | undefined;
+    let explanation: string | undefined;
+    let candidateFromTool: string | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    let completed = false;
+
     try {
       setAgentResult(null);
       setHideAgentPanel(false);
-      setAgentLoading(true);
-      // Kick off a single-turn streaming request that includes the current code and known error
-      const parserError = error || 'Unknown or not provided';
-      // Ensure only the latest message is sent to reduce tokens
-      setMessages([]);
-      await sendMessage({
-        text: `Fix this Mermaid diagram. Current code and real parser error (if any):\n\nCurrent Code:\n\n\`\`\`mermaid\n${code}\n\`\`\`\n\nParser Error:\n${parserError}`,
+      setAgentStream(null);
+
+      const parserError = error ?? 'Unknown validation error';
+      const abortController = new AbortController();
+
+      runId = runIdCounterRef.current + 1;
+      runIdCounterRef.current = runId;
+      activeRunIdRef.current = runId;
+
+      status = {
+        label: 'Analyzing diagram…',
+        detail: parserError,
+        tone: 'progress',
+      };
+
+      setAgentStreamingState({
+        isLoading: true,
+        isStreaming: true,
+        abortController,
+        runId,
       });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Agent error';
-      setAgentResult({ success: false, message: msg, stepsUsed: 0 });
-    } finally {
-      setAgentLoading(false);
-    }
-  }
 
-  // Derive live streaming info from messages (last assistant message)
-  const agentStream: AgentStream = useMemo(() => {
-    try {
-      const lastAssistant = [...messages]
-        .reverse()
-        .find((m) => m.role === 'assistant');
-      if (!lastAssistant) return null;
+      const emitStreamUpdate = () => {
+        if (runId === null) return;
+        if (activeRunIdRef.current !== runId) return;
+        setAgentStream({
+          steps,
+          message,
+          finalCode,
+          validated,
+          usage,
+          status,
+        });
+        if (status) {
+          setAgentStatus(status);
+        }
+      };
 
-      let stepIndex = 0;
-      const steps: { action: string; details: string }[] = [];
-      let messageText = '';
-      let finalCode: string | undefined;
-      let validated = false;
-      const usage = lastAssistant.metadata as
-        | { totalTokens?: number; inputTokens?: number; outputTokens?: number }
-        | undefined;
+      emitStreamUpdate();
 
-      for (const part of lastAssistant.parts as any[]) {
-        switch (part.type) {
-          case 'text':
-            messageText += part.text;
-            break;
-          case 'step-start':
-            stepIndex += 1;
-            steps.push({ action: `Step ${stepIndex}`, details: 'Starting…' });
-            break;
-          case 'dynamic-tool':
-          case 'tool-fixMermaidCode': {
-            const name =
-              part.type === 'dynamic-tool' ? part.toolName : 'fixMermaidCode';
-            if (name !== 'fixMermaidCode') break;
-            const callId = part.toolCallId as string;
-            switch (part.state) {
-              case 'input-streaming':
-                steps.push({
-                  action: `Tool: fixMermaidCode (${callId})`,
-                  details: 'Preparing input…',
-                });
-                break;
-              case 'input-available':
-                steps.push({
-                  action: `Tool: fixMermaidCode (${callId})`,
-                  details: 'Submitting candidate fix for validation…',
-                });
-                break;
-              case 'output-available': {
-                const out = part.output as {
-                  fixedCode?: string;
-                  validated?: boolean;
-                  validationError?: string;
-                  explanation?: string;
-                };
-                finalCode = out?.fixedCode ?? finalCode;
-                validated = !!out?.validated;
-                const status = out?.validated
-                  ? 'PASSED ✅'
-                  : `FAILED ❌${
-                      out?.validationError ? ` — ${out.validationError}` : ''
-                    }`;
-                steps.push({
-                  action: `Tool Result (${callId})`,
-                  details: `${status}${
-                    out?.explanation ? `\n${out.explanation}` : ''
-                  }`,
-                });
-                break;
-              }
-              case 'output-error':
-                steps.push({
-                  action: `Tool Error (${callId})`,
-                  details: String(part.errorText || 'Unknown error'),
-                });
-                break;
+      const response = await fetch('/api/agent', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          code,
+          error: parserError,
+          step: 1,
+        }),
+        signal: abortController.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      reader = response.body?.getReader() ?? null;
+      if (!reader) {
+        throw new Error('No response body reader available');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      const isStale = () => runId === null || activeRunIdRef.current !== runId;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (isStale()) return;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const raw of lines) {
+          if (!raw.trim()) continue;
+
+          let event: any;
+          try {
+            event = JSON.parse(raw);
+          } catch (parseError) {
+            console.error(
+              'Error parsing streaming event:',
+              parseError,
+              'Line:',
+              raw
+            );
+            continue;
+          }
+
+          if (isStale()) return;
+
+          if (event.type === 'tool-call') {
+            const detail = JSON.stringify(
+              event.args ?? event.input ?? {},
+              null,
+              2
+            );
+            steps = [
+              ...steps,
+              {
+                action: `Tool call — ${event.toolName}`,
+                details: detail,
+              },
+            ];
+            status = {
+              label: `Running ${event.toolName}`,
+              detail: 'Validating proposed fix…',
+              tone: 'progress',
+              toolName: event.toolName,
+            };
+            emitStreamUpdate();
+          } else if (event.type === 'tool-result') {
+            const result = event.result ?? event.output ?? {};
+            const detail = JSON.stringify(result, null, 2);
+            steps = [
+              ...steps,
+              {
+                action: `Tool result — ${event.toolName}`,
+                details: detail,
+              },
+            ];
+
+            if (typeof result.fixedCode === 'string') {
+              candidateFromTool = result.fixedCode;
             }
-            break;
+            if (typeof result.validated === 'boolean') {
+              validated = result.validated;
+            }
+
+            const validationError = result.validationError as
+              | string
+              | undefined;
+            status = result.validated
+              ? {
+                  label: 'Validation passed',
+                  detail: `${event.toolName} confirmed the fix.`,
+                  tone: 'success',
+                  toolName: event.toolName,
+                }
+              : {
+                  label: 'Validation failed',
+                  detail:
+                    validationError ?? `${event.toolName} reported an issue.`,
+                  tone: 'error',
+                  toolName: event.toolName,
+                };
+            emitStreamUpdate();
+          } else if (event.type === 'text-delta') {
+            if (typeof event.accumulatedText === 'string') {
+              try {
+                const parsed = JSON.parse(event.accumulatedText);
+                if (typeof parsed.fixedCode === 'string') {
+                  candidateFromTool = parsed.fixedCode;
+                }
+                if (typeof parsed.explanation === 'string') {
+                  explanation = parsed.explanation;
+                  message = parsed.explanation;
+                }
+              } catch {
+                if (!message) {
+                  message = 'Synthesizing fix…';
+                }
+              }
+            }
+
+            status = {
+              label: 'Drafting fix…',
+              detail: explanation,
+              tone: 'progress',
+            };
+            emitStreamUpdate();
+          } else if (event.type === 'finish') {
+            usage = (event.usage ?? event.totalUsage) as AgentUsage | undefined;
+            status = {
+              label: 'Finalizing…',
+              detail: event.finishReason
+                ? `Finish reason: ${event.finishReason}`
+                : undefined,
+              tone: validated === false ? 'error' : 'progress',
+            };
+            emitStreamUpdate();
+          } else if (event.type === 'error') {
+            const detail =
+              typeof event.error === 'string'
+                ? event.error
+                : 'Agent reported an error.';
+            message = detail;
+            status = {
+              label: 'Agent error',
+              detail,
+              tone: 'error',
+            };
+            emitStreamUpdate();
+          } else if (typeof event.success === 'boolean') {
+            completed = true;
+
+            finalCode = event.fixedCode ?? candidateFromTool;
+            const isComplete = event.isComplete ?? false;
+            validated =
+              event.validated ??
+              (typeof validated === 'boolean' ? validated : isComplete);
+            usage = event.usage ?? usage;
+
+            const finalMessage =
+              (event.explanation as string | undefined) ??
+              (event.message as string | undefined) ??
+              explanation ??
+              (message || 'Fix completed');
+
+            message = finalMessage;
+            explanation = finalMessage;
+
+            status = event.success
+              ? {
+                  label: validated ? 'Diagram fixed' : 'Agent completed',
+                  detail: finalMessage,
+                  tone: validated ? 'success' : 'progress',
+                }
+              : {
+                  label: 'Agent failed',
+                  detail: finalMessage,
+                  tone: 'error',
+                };
+
+            const summaryStep = {
+              action: 'Summary',
+              details: finalMessage,
+            };
+            steps = [...steps, summaryStep];
+
+            setAgentResult({
+              success: Boolean(event.success),
+              message: finalMessage,
+              finalCode,
+              stepsUsed: steps.length,
+              steps,
+            });
+
+            emitStreamUpdate();
+            setAgentStreamingState((prev) => ({
+              ...prev,
+              isLoading: false,
+              isStreaming: false,
+              abortController: null,
+              runId: null,
+            }));
+            activeRunIdRef.current = null;
+            return;
           }
         }
       }
 
-      return {
+      if (isStale()) return;
+      if (!completed) {
+        throw new Error('Streaming ended before final result was received');
+      }
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        return;
+      }
+
+      const msg = e instanceof Error ? e.message : 'Agent error';
+      status = {
+        label: 'Agent error',
+        detail: msg,
+        tone: 'error',
+      };
+      message = msg;
+      setAgentStatus(status);
+      setAgentStream({
         steps,
-        message: messageText || undefined,
+        message,
         finalCode,
         validated,
         usage,
-      };
-    } catch {
-      return null;
+        status,
+      });
+      setAgentResult({
+        success: false,
+        message: msg,
+        stepsUsed: steps.length,
+        steps,
+      });
+      setAgentStreamingState((prev) => ({
+        ...prev,
+        isLoading: false,
+        isStreaming: false,
+        abortController: null,
+        runId: null,
+      }));
+      activeRunIdRef.current = null;
+    } finally {
+      if (reader) {
+        try {
+          reader.releaseLock();
+        } catch {}
+      }
     }
-  }, [messages]);
+  }
 
   function acceptAgentResult() {
     const final = agentResult?.finalCode || agentStream?.finalCode;
@@ -542,12 +800,12 @@ export default function Home() {
                     setAgentResult(null);
                     setHideAgentPanel(true);
                   }}
-                  onStopAgent={() => {
-                    stopChat();
-                  }}
-                  agentLoading={agentLoading || chatLoading}
+                  onStopAgent={stopAgentStreaming}
+                  agentLoading={agentLoading}
                   agentStreaming={isStreaming}
                   onFixWithAgent={handleFixWithAgent}
+                  agentStatus={agentStatus}
+                  diagramError={error}
                   isCollapsed={editorCollapsed}
                   onToggleCollapse={() => setEditorCollapsed(!editorCollapsed)}
                 />
