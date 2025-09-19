@@ -134,6 +134,7 @@ export async function POST(req: NextRequest) {
       fixedCode: z.string().describe('Minimally changed Mermaid code proposal'),
       explanation: z.string().describe('Short explanation of the changes'),
     });
+    type FixProposal = z.infer<typeof ObjectSchema>;
 
     console.log('🧠 streamText with experimental_output: preparing request');
 
@@ -177,7 +178,7 @@ export async function POST(req: NextRequest) {
       experimental_output: Output.object({
         schema: ObjectSchema,
       }),
-      stopWhen: stepCountIs(4), // max round trips with the LLM
+      stopWhen: stepCountIs(10), // max round trips with the LLM
       system: `You fix Mermaid diagrams with minimal edits. Use the mermaidValidator tool to validate your fixes. Output a structured object with fixedCode and explanation.`,
       prompt: `Fix this Mermaid diagram. Provide a minimal fix.
 
@@ -212,6 +213,37 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
           let eventCount = 0;
           let accumulatedText = '';
           let hasFinished = false;
+
+          const partialOutputIterator = result.experimental_partialOutputStream;
+          const structuredOutputPromise: Promise<FixProposal | null> =
+            partialOutputIterator
+              ? (async () => {
+                  let last: FixProposal | null = null;
+                  try {
+                    for await (const partial of partialOutputIterator) {
+                      if (partial && typeof partial === 'object') {
+                        last = partial as FixProposal;
+
+                        const data =
+                          JSON.stringify({
+                            type: 'structured-output',
+                            count: ++eventCount,
+                            output: last,
+                            timestamp: new Date().toISOString(),
+                          }) + '\n';
+
+                        controller.enqueue(new TextEncoder().encode(data));
+                      }
+                    }
+                  } catch (streamError) {
+                    console.warn(
+                      'Failed reading experimental_partialOutputStream:',
+                      streamError
+                    );
+                  }
+                  return last;
+                })()
+              : Promise.resolve(null);
 
           // ========================================
           // EVENT STREAMING LOOP
@@ -317,12 +349,13 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
           // ========================================
           // Extract and process the final AI results once streaming completes
 
-          const [finalText, totalUsage, finishReason, steps] =
+          const [finalText, totalUsage, finishReason, steps, structuredOutput] =
             await Promise.all([
               result.text,
               result.totalUsage,
               result.finishReason,
               result.steps,
+              structuredOutputPromise,
             ]);
 
           console.log('🧠 streamText: completed');
@@ -331,27 +364,12 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
           // STRUCTURED OUTPUT EXTRACTION
           // ========================================
           // Attempt to extract the structured fix proposal from various sources
-          type FixProposal = z.infer<typeof ObjectSchema>;
-          type StreamResultWithOutput = typeof result & {
-            experimental_output?: FixProposal;
-          };
+          let obj: FixProposal | null = structuredOutput ?? null;
 
-          let obj: FixProposal | null = null;
-
-          // First try: AI SDK v5 experimental_output (preferred method)
-          try {
-            const experimentalObj = (result as StreamResultWithOutput)
-              .experimental_output;
-            if (experimentalObj) {
-              obj = experimentalObj;
-              console.log(
-                'Got structured object from experimental_output:',
-                obj
-              );
-            }
-          } catch {
+          if (obj) {
             console.log(
-              'experimental_output not available, trying other methods'
+              'Got structured object from experimental_partialOutputStream:',
+              obj
             );
           }
 

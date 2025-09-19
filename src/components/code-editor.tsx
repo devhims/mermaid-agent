@@ -179,7 +179,7 @@ export function CodeEditor({
                     size='sm'
                     onClick={onFixWithAgent}
                     disabled={agentLoading}
-                    className='h-8 px-2 text-xs shadow-sm cursor-pointer bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600'
+                    className='h-8 px-2 text-xs shadow-sm cursor-pointer bg-emerald-600 hover:bg-emerald-700'
                   >
                     ✨ Auto Fix
                   </Button>
@@ -246,7 +246,12 @@ export function CodeEditor({
                           : 'text-amber-700 dark:text-yellow-200'
                       }`}
                     >
-                      🤖 Agent {agentStream ? '(Live)' : 'Result'}
+                      🤖 Agent {agentStreaming ? '(Live)' : 'Result'}
+                      {agentStreaming && (
+                        <span className='inline-flex ml-1'>
+                          <span className='inline-block h-2 w-2 bg-current rounded-full animate-pulse'></span>
+                        </span>
+                      )}
                     </span>
                     {(() => {
                       const stepCount =
@@ -297,9 +302,11 @@ export function CodeEditor({
                         </Button>
                       </div>
                     )}
-                    {((agentStream?.validated && agentStream?.finalCode) ||
-                      (agentResult?.success && agentResult?.finalCode)) &&
-                      onAcceptAgentResult && (
+                    {!agentStreaming &&
+                      ((agentStream?.validated && agentStream?.finalCode) ||
+                        (!agentStream &&
+                          agentResult?.success &&
+                          agentResult?.finalCode)) && (
                         <Button
                           size='sm'
                           onClick={onAcceptAgentResult}
@@ -336,11 +343,12 @@ export function CodeEditor({
                 )}
 
                 {/* Final code (live or final) */}
-                {(agentStream?.finalCode || agentResult?.finalCode) && (
+                {(agentStream?.finalCode && agentStream.finalCode.length > 0) ||
+                agentResult?.finalCode ? (
                   <pre className='text-xs bg-background/50 p-2 rounded border overflow-auto max-h-32'>
                     {agentStream?.finalCode || agentResult?.finalCode}
                   </pre>
-                )}
+                ) : null}
 
                 {/* Steps (live or final) */}
                 {((agentStream && agentStream.steps?.length > 0) ||

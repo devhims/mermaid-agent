@@ -1,5 +1,16 @@
 @import 'tailwindcss';
 
+@custom-variant dark (
+  &:where(
+    .dark,
+    .dark *,
+    [data-theme='dark'],
+    [data-theme='dark'] *,
+    :host(.dark),
+    :host([data-theme='dark'])
+  )
+);
+
 :root {
   --radius: 0.625rem;
   /* Polished Light theme */

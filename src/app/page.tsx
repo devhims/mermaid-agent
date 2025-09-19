@@ -513,12 +513,42 @@ export default function Home() {
                   toolName,
                 };
             emitStreamUpdate();
+          } else if (event.type === 'structured-output') {
+            const structuredEvent = event as GenericStreamEvent & {
+              output?: unknown;
+            };
+            if (structuredEvent.output && isRecord(structuredEvent.output)) {
+              const structuredOutput = structuredEvent.output;
+              const fixed = structuredOutput['fixedCode'];
+              const explanationText = structuredOutput['explanation'];
+
+              if (typeof fixed === 'string' && fixed.length > 0) {
+                candidateFromTool = fixed;
+                finalCode = fixed;
+              }
+
+              if (typeof explanationText === 'string') {
+                explanation = explanationText;
+                message = explanationText;
+              }
+
+              status = {
+                label: 'Synthesizing fix…',
+                detail: explanation,
+                tone: 'progress',
+              };
+              emitStreamUpdate();
+            }
           } else if (event.type === 'text-delta') {
             if (typeof event.accumulatedText === 'string') {
               try {
                 const parsed = JSON.parse(event.accumulatedText);
-                if (typeof parsed.fixedCode === 'string') {
+                if (
+                  typeof parsed.fixedCode === 'string' &&
+                  !agentStream?.finalCode
+                ) {
                   candidateFromTool = parsed.fixedCode;
+                  finalCode = parsed.fixedCode;
                 }
                 if (typeof parsed.explanation === 'string') {
                   explanation = parsed.explanation;
