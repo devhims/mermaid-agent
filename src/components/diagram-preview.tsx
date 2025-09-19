@@ -1,19 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   TransformWrapper,
   TransformComponent,
   ReactZoomPanPinchRef,
 } from 'react-zoom-pan-pinch';
-import {
-  Download,
-  ZoomIn,
-  ZoomOut,
-  RotateCcw,
-  Maximize2,
-  Palette,
-} from 'lucide-react';
+import { ZoomIn, ZoomOut, RotateCcw, Maximize2, Palette } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import {
@@ -27,14 +20,7 @@ import {
   MERMAID_THEME_LABELS,
   type MermaidTheme,
 } from '@/lib/mermaid-utils';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
+import { DiagramDownloadDialog } from '@/components/diagram-download-dialog';
 
 interface DiagramPreviewProps {
   error: string | null;
@@ -46,10 +32,10 @@ interface DiagramPreviewProps {
   onZoomIn: () => void;
   onZoomOut: () => void;
   onResetView: () => void;
-  onFitToView: () => void;
   zoomPanRef: React.RefObject<ReactZoomPanPinchRef | null>;
   selectedTheme: MermaidTheme;
   onThemeChange: (theme: MermaidTheme) => void;
+  onExportCode: () => void;
 }
 
 export function DiagramPreview({
@@ -62,108 +48,16 @@ export function DiagramPreview({
   onZoomIn,
   onZoomOut,
   onResetView,
-  onFitToView,
   zoomPanRef,
   selectedTheme,
   onThemeChange,
+  onExportCode,
 }: DiagramPreviewProps) {
-  const [isDownloadDialogOpen, setIsDownloadDialogOpen] = useState(false);
-  const [lightPreview, setLightPreview] = useState<string | null>(null);
-  const [darkPreview, setDarkPreview] = useState<string | null>(null);
-  const [transparentPreview, setTransparentPreview] = useState<string | null>(
-    null
-  );
   const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
-
-  function getCurrentSvg(): SVGSVGElement | null {
+  const getCurrentSvg = useCallback(() => {
     return containerRef.current?.querySelector('svg') ?? null;
-  }
-
-  function makePreview(
-    bg: 'light' | 'dark' | 'transparent'
-  ): Promise<string | null> {
-    const svg = getCurrentSvg();
-    if (!svg) return Promise.resolve(null);
-
-    // Clone and normalize sizing using content bbox + padding
-    const cloned = svg.cloneNode(true) as SVGSVGElement;
-    cloned.removeAttribute('style');
-    const bbox = svg.getBBox();
-    const padding = 16;
-    const vbX = bbox.x - padding;
-    const vbY = bbox.y - padding;
-    const vbW = Math.max(1, bbox.width + padding * 2);
-    const vbH = Math.max(1, bbox.height + padding * 2);
-    cloned.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
-    cloned.setAttribute('width', String(vbW));
-    cloned.setAttribute('height', String(vbH));
-    if (!cloned.getAttribute('xmlns')) {
-      cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-    }
-
-    const serializer = new XMLSerializer();
-    const source = serializer.serializeToString(cloned);
-    const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-      source
-    )}`;
-
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.decoding = 'async';
-      img.onload = () => {
-        const exportW = vbW;
-        const exportH = vbH;
-        const scale = 1; // keep previews quick
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(exportW * scale));
-        canvas.height = Math.max(1, Math.round(exportH * scale));
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return resolve(null);
-        ctx.scale(scale, scale);
-        const drawDarkGrid = (
-          ctx: CanvasRenderingContext2D,
-          w: number,
-          h: number
-        ) => {
-          const spacing = 24;
-          const radius = 1;
-          ctx.fillStyle = 'rgba(255,255,255,0.07)';
-          for (let y = 0; y < h; y += spacing) {
-            for (let x = 0; x < w; x += spacing) {
-              ctx.beginPath();
-              ctx.arc(x + 2, y + 2, radius, 0, Math.PI * 2);
-              ctx.fill();
-            }
-          }
-        };
-
-        if (bg === 'light') {
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, exportW, exportH);
-        } else if (bg === 'dark') {
-          ctx.fillStyle = '#0b0f1a';
-          ctx.fillRect(0, 0, exportW, exportH);
-          drawDarkGrid(ctx, exportW, exportH);
-        }
-        ctx.drawImage(img, 0, 0, exportW, exportH);
-        resolve(canvas.toDataURL('image/png'));
-      };
-      img.onerror = () => resolve(null);
-      img.src = svgDataUrl;
-    });
-  }
-
-  async function refreshPreviews() {
-    const [lp, dp, tp] = await Promise.all([
-      makePreview('light'),
-      makePreview('dark'),
-      makePreview('transparent'),
-    ]);
-    setLightPreview(lp);
-    setDarkPreview(dp);
-    setTransparentPreview(tp);
-  }
+  }, [containerRef]);
 
   // Fullscreen overlay lifecycle
   useEffect(() => {
@@ -271,7 +165,6 @@ export function DiagramPreview({
             >
               <RotateCcw className='h-4 w-4' />
             </Button>
-
             <Button
               variant='ghost'
               size='default'
@@ -295,7 +188,7 @@ export function DiagramPreview({
                 className='text-sm shadow-sm cursor-pointer'
                 aria-label='Select theme'
               >
-                <Palette className='h-4 w-4 mr-1' />
+                <Palette className='h-4 w-4' />
                 {/* {MERMAID_THEME_LABELS[selectedTheme]} */}
               </Button>
             </DropdownMenuTrigger>
@@ -321,131 +214,13 @@ export function DiagramPreview({
 
           <Separator orientation='vertical' className='h-8' />
 
-          {/* Download Button with Modal */}
-          <Dialog
-            open={isDownloadDialogOpen}
-            onOpenChange={setIsDownloadDialogOpen}
-          >
-            <DialogTrigger
-              asChild
-              onClick={() => {
-                // Generate fresh previews whenever opening
-                setTimeout(() => refreshPreviews(), 0);
-              }}
-            >
-              <Button
-                variant='outline'
-                size='default'
-                className='text-sm shadow-sm cursor-pointer'
-              >
-                <Download className='h-4 w-4' />
-              </Button>
-            </DialogTrigger>
-            <DialogContent className='sm:max-w-2xl'>
-              <DialogHeader>
-                <DialogTitle className='text-xl'>Download Diagram</DialogTitle>
-                <DialogDescription className='text-base'>
-                  Choose a background for your diagram export
-                </DialogDescription>
-              </DialogHeader>
-              <div className='grid grid-cols-3 gap-6 mt-6'>
-                {/* Light */}
-                <div className='space-y-4'>
-                  <div className='aspect-square border-2 rounded-xl overflow-hidden bg-white border-gray-200 shadow-sm'>
-                    {lightPreview ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={lightPreview}
-                        alt='Light preview'
-                        className='w-full h-full object-contain p-2'
-                      />
-                    ) : (
-                      <div className='h-full bg-gray-50 flex items-center justify-center text-sm text-gray-500'>
-                        Generating…
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    onClick={() => {
-                      onDownloadLight();
-                      setIsDownloadDialogOpen(false);
-                    }}
-                    className='w-full h-11'
-                    variant='outline'
-                  >
-                    <Download className='h-4 w-4 mr-2' />
-                    Light PNG
-                  </Button>
-                </div>
-
-                {/* Dark */}
-                <div className='space-y-4'>
-                  <div className='aspect-square border-2 rounded-xl overflow-hidden bg-[#0b0f1a] border-gray-700 shadow-sm'>
-                    {darkPreview ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={darkPreview}
-                        alt='Dark preview'
-                        className='w-full h-full object-contain p-2'
-                      />
-                    ) : (
-                      <div className='h-full bg-gray-800 flex items-center justify-center text-sm text-gray-300'>
-                        Generating…
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    onClick={() => {
-                      onDownloadDark();
-                      setIsDownloadDialogOpen(false);
-                    }}
-                    className='w-full h-11'
-                    variant='outline'
-                  >
-                    <Download className='h-4 w-4 mr-2' />
-                    Dark PNG
-                  </Button>
-                </div>
-
-                {/* Transparent */}
-                <div className='space-y-4'>
-                  <div
-                    className='aspect-square border-2 rounded-xl overflow-hidden border-gray-300 shadow-sm'
-                    style={{
-                      backgroundImage:
-                        'linear-gradient(45deg, #f8fafc 25%, transparent 25%), linear-gradient(-45deg, #f8fafc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #f8fafc 75%), linear-gradient(-45deg, transparent 75%, #f8fafc 75%)',
-                      backgroundSize: '20px 20px',
-                      backgroundPosition: '0 0, 0 10px, 10px -10px, -10px 0px',
-                    }}
-                  >
-                    {transparentPreview ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={transparentPreview}
-                        alt='Transparent preview'
-                        className='w-full h-full object-contain p-2'
-                      />
-                    ) : (
-                      <div className='h-full flex items-center justify-center text-sm text-gray-500'>
-                        Generating…
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    onClick={() => {
-                      onDownloadTransparent();
-                      setIsDownloadDialogOpen(false);
-                    }}
-                    className='w-full h-11'
-                    variant='outline'
-                  >
-                    <Download className='h-4 w-4 mr-2' />
-                    Transparent PNG
-                  </Button>
-                </div>
-              </div>
-            </DialogContent>
-          </Dialog>
+          <DiagramDownloadDialog
+            getCurrentSvg={getCurrentSvg}
+            onDownloadLight={onDownloadLight}
+            onDownloadDark={onDownloadDark}
+            onDownloadTransparent={onDownloadTransparent}
+            onExportCode={onExportCode}
+          />
         </div>
       </div>
 

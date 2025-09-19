@@ -14,7 +14,7 @@
  * with the existing frontend interface.
  */
 
-import { streamText, tool, stepCountIs, Output } from 'ai';
+import { streamText, tool, stepCountIs, Output, InferToolOutput } from 'ai';
 
 import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
@@ -61,6 +61,10 @@ const ResponseSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    // ========================================
+    // ENVIRONMENT VALIDATION
+    // ========================================
+    // Ensure OpenAI API key is configured before proceeding
     if (!process.env.OPENAI_API_KEY) {
       return new Response(
         JSON.stringify({
@@ -70,9 +74,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // ========================================
+    // REQUEST PARSING & VALIDATION
+    // ========================================
+    // Parse and validate incoming request body against our schema
     const json = await req.json().catch(() => ({}));
-
-    // Structured object generation (fixedCode + explanation) with validation
 
     const parsed = RequestSchema.safeParse(json);
     if (!parsed.success) {
@@ -82,8 +88,25 @@ export async function POST(req: NextRequest) {
     }
     const { code, error, step } = parsed.data;
 
-    // Validate original code first
+    // ========================================
+    // INITIAL MERMAID CODE VALIDATION
+    // ========================================
+    // Check if the provided code is already valid - if so, return early
     const initialValidation = await validateMermaidCode(code);
+
+    if (!initialValidation.isLikelyMermaid) {
+      return new Response(
+        JSON.stringify({
+          error: 'Input is not a valid Mermaid diagram.',
+          validationError: initialValidation.error,
+        }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
     if (initialValidation.isValid) {
       const response = ResponseSchema.parse({
         success: true,
@@ -99,10 +122,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Determine the actual error message to work with
     const actualError =
       initialValidation.error || error || 'Unknown validation error';
 
-    // Ask model for minimally changed fixedCode + explanation using streamText + experimental_output
+    // ========================================
+    // AI MODEL SETUP & TOOL CONFIGURATION
+    // ========================================
+    // Define the structured output schema for AI SDK v5 experimental_output
     const ObjectSchema = z.object({
       fixedCode: z.string().describe('Minimally changed Mermaid code proposal'),
       explanation: z.string().describe('Short explanation of the changes'),
@@ -110,7 +137,7 @@ export async function POST(req: NextRequest) {
 
     console.log('🧠 streamText with experimental_output: preparing request');
 
-    // Create a validation tool for the model to use
+    // Create a validation tool that the AI model can use to test its fixes
     const mermaidValidator = tool({
       description:
         'Validate a candidate Mermaid code snippet with the real Mermaid parser and return validation status.',
@@ -138,13 +165,19 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    const tools = { mermaidValidator };
+
+    // ========================================
+    // AI STREAM TEXT CONFIGURATION
+    // ========================================
+    // Configure the AI model with tools, structured output, and step limits
     const result = streamText({
       model: openai('gpt-4o-mini'),
-      tools: { mermaidValidator },
+      tools,
       experimental_output: Output.object({
         schema: ObjectSchema,
       }),
-      stopWhen: stepCountIs(4), // tool call + tool result + structured output + final step
+      stopWhen: stepCountIs(4), // max round trips with the LLM
       system: `You fix Mermaid diagrams with minimal edits. Use the mermaidValidator tool to validate your fixes. Output a structured object with fixedCode and explanation.`,
       prompt: `Fix this Mermaid diagram. Provide a minimal fix.
 
@@ -164,7 +197,10 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
       maxOutputTokens: 1000,
     });
 
-    // Create a ReadableStream to handle the streaming response
+    // ========================================
+    // STREAMING RESPONSE SETUP
+    // ========================================
+    // Create a ReadableStream to handle real-time streaming of AI SDK stream events
     const stream = new ReadableStream({
       async start(controller) {
         try {
@@ -172,17 +208,21 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
             '🧠 streamText with experimental_output: starting streaming...'
           );
 
+          // Initialize streaming state variables
           let eventCount = 0;
           let accumulatedText = '';
           let hasFinished = false;
 
-          // Stream all events including tool calls and text deltas
-
+          // ========================================
+          // EVENT STREAMING LOOP
+          // ========================================
+          // Process and forward all AI SDK events (text deltas, tool calls, results, etc.)
           for await (const event of result.fullStream) {
             if (hasFinished) break; // Stop if we've already sent completion
 
             eventCount++;
 
+            // Handle incremental text generation from the AI model
             if (event.type === 'text-delta') {
               accumulatedText += event.text;
 
@@ -198,10 +238,11 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
 
               controller.enqueue(new TextEncoder().encode(data));
             } else if (event.type === 'tool-call') {
+              // Handle AI model invoking the mermaidValidator tool
               console.log(
                 `🔧 Tool call #${eventCount}:`,
                 event.toolName,
-                (event as any).input || (event as any).args
+                event.input
               );
 
               // Send tool call event
@@ -210,16 +251,19 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
                   type: 'tool-call',
                   count: eventCount,
                   toolName: event.toolName,
-                  args: (event as any).input || (event as any).args,
+                  toolCallId: event.toolCallId,
+                  providerExecuted: event.providerExecuted,
+                  args: event.input,
                   timestamp: new Date().toISOString(),
                 }) + '\n';
 
               controller.enqueue(new TextEncoder().encode(data));
             } else if (event.type === 'tool-result') {
+              // Handle results from tool execution (validation outcomes)
               console.log(
                 `✅ Tool result #${eventCount}:`,
                 event.toolName,
-                (event as any).output || (event as any).result
+                event.output
               );
 
               // Send tool result event
@@ -228,12 +272,16 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
                   type: 'tool-result',
                   count: eventCount,
                   toolName: event.toolName,
-                  result: (event as any).output || (event as any).result,
+                  toolCallId: event.toolCallId,
+                  providerExecuted: event.providerExecuted,
+                  preliminary: event.preliminary,
+                  result: event.output,
                   timestamp: new Date().toISOString(),
                 }) + '\n';
 
               controller.enqueue(new TextEncoder().encode(data));
             } else if (event.type === 'error') {
+              // Handle any errors that occur during AI SDK processing
               console.error(`❌ Error #${eventCount}:`, event.error);
 
               // Send error event
@@ -247,6 +295,7 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
 
               controller.enqueue(new TextEncoder().encode(data));
             } else if (event.type === 'finish') {
+              // Handle completion of AI processing
               console.log(`🏁 Finish #${eventCount}:`, event.finishReason);
 
               // Send finish event
@@ -263,20 +312,36 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
             }
           }
 
-          // Get final results
-          const finalText = await result.text;
-          const totalUsage = await result.totalUsage;
-          const finishReason = await result.finishReason;
-          const steps = await result.steps;
+          // ========================================
+          // FINAL RESULT PROCESSING
+          // ========================================
+          // Extract and process the final AI results once streaming completes
+
+          const [finalText, totalUsage, finishReason, steps] =
+            await Promise.all([
+              result.text,
+              result.totalUsage,
+              result.finishReason,
+              result.steps,
+            ]);
 
           console.log('🧠 streamText: completed');
 
-          // Try to parse the final structured output from experimental_output
-          let obj: { fixedCode: string; explanation: string } | null = null;
+          // ========================================
+          // STRUCTURED OUTPUT EXTRACTION
+          // ========================================
+          // Attempt to extract the structured fix proposal from various sources
+          type FixProposal = z.infer<typeof ObjectSchema>;
+          type StreamResultWithOutput = typeof result & {
+            experimental_output?: FixProposal;
+          };
 
-          // Check if experimental_output is available
+          let obj: FixProposal | null = null;
+
+          // First try: AI SDK v5 experimental_output (preferred method)
           try {
-            const experimentalObj = await (result as any).experimental_output;
+            const experimentalObj = (result as StreamResultWithOutput)
+              .experimental_output;
             if (experimentalObj) {
               obj = experimentalObj;
               console.log(
@@ -284,82 +349,135 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
                 obj
               );
             }
-          } catch (e) {
+          } catch {
             console.log(
               'experimental_output not available, trying other methods'
             );
           }
 
-          // Fallback: try to parse from final text
+          // Second try: Parse final text as JSON (fallback method)
           if (!obj) {
             try {
-              obj = JSON.parse(finalText);
+              obj = JSON.parse(finalText) as FixProposal;
               console.log('Parsed structured object from final text:', obj);
-            } catch (parseError) {
+            } catch {
               console.log('Could not parse final text as JSON');
-              obj = null;
             }
           }
 
-          // Last fallback: extract from tool results
-          if (!obj && steps.length > 0) {
+          // ========================================
+          // TOOL RESULT EXTRACTION
+          // ========================================
+          // Extract validation results from the last tool execution as backup
+          type ValidatorOutput = InferToolOutput<typeof mermaidValidator>;
+          let lastValidatorOutput: ValidatorOutput | null = null;
+
+          if (steps.length > 0) {
             const lastStep = steps[steps.length - 1];
             if (lastStep.toolResults && lastStep.toolResults.length > 0) {
               const lastToolResult =
                 lastStep.toolResults[lastStep.toolResults.length - 1];
-              const output = lastToolResult.output as any;
-              if (output?.fixedCode) {
-                obj = {
-                  fixedCode: output.fixedCode,
-                  explanation: `Fixed using validator tool: ${
-                    output.validationError || 'Validation passed'
-                  }`,
-                };
-                console.log('Extracted object from tool result:', obj);
+              if (lastToolResult && !lastToolResult.dynamic) {
+                const output = lastToolResult.output as ValidatorOutput;
+                if (output) {
+                  lastValidatorOutput = output;
+                  // Third try: Use tool result if no structured output found
+                  if (!obj && output.fixedCode) {
+                    obj = {
+                      fixedCode: output.fixedCode,
+                      explanation: `Fixed using validator tool: ${
+                        output.validationError || 'Validation passed'
+                      }`,
+                    };
+                    console.log('Extracted object from tool result:', obj);
+                  }
+                }
               }
             }
           }
 
-          if (!obj) {
-            console.error('No structured output received from model');
-            throw new Error('No structured output received from model');
+          // ========================================
+          // RESPONSE PREPARATION
+          // ========================================
+          // Prepare the final response with fallback mechanisms
+          const fallbackExplanation = finalText.trim();
+          const finalFixedCode =
+            obj?.fixedCode ?? lastValidatorOutput?.fixedCode ?? code;
+          const finalExplanation =
+            obj?.explanation ??
+            (fallbackExplanation
+              ? fallbackExplanation
+              : 'Model did not return structured output. Refer to the transcript for details.');
+
+          // Final validation of the proposed fix
+          const validation = await validateMermaidCode(finalFixedCode);
+
+          // Build attempts array for debugging and transparency
+          const attempts = [] as Array<{
+            fixedCode?: string;
+            validated?: boolean;
+            validationError?: string | null;
+            explanation?: string;
+          }>;
+
+          if (obj) {
+            attempts.push({
+              fixedCode: obj.fixedCode,
+              validated: validation.isValid,
+              validationError: validation.error,
+              explanation: obj.explanation,
+            });
+          } else if (lastValidatorOutput) {
+            attempts.push({
+              fixedCode: lastValidatorOutput.fixedCode,
+              validated: lastValidatorOutput.validated,
+              validationError: lastValidatorOutput.validationError,
+              explanation: finalExplanation,
+            });
           }
 
-          const validation = await validateMermaidCode(obj.fixedCode);
+          // Count tool calls for monitoring
+          const toolCallCount = steps.reduce(
+            (count, currentStep) => count + currentStep.toolCalls.length,
+            0
+          );
 
           hasFinished = true;
 
+          // ========================================
+          // FINAL RESPONSE TRANSMISSION
+          // ========================================
+          // Send the complete result as the final streaming message
           const finalData =
             JSON.stringify({
-              success: true,
+              success: validation.isValid && Boolean(obj),
               isComplete: validation.isValid,
-              fixedCode: obj.fixedCode,
-              explanation: obj.explanation,
+              fixedCode: finalFixedCode,
+              explanation: finalExplanation,
               validated: validation.isValid,
               validationError: validation.error,
               step,
-              attempts: [
-                {
-                  fixedCode: obj.fixedCode,
-                  validated: validation.isValid,
-                  validationError: validation.error,
-                  explanation: obj.explanation,
-                },
-              ],
+              attempts,
+              toolCallCount,
+              stepsCount: steps.length,
               usage: {
                 totalTokens: totalUsage?.totalTokens,
                 inputTokens: totalUsage?.inputTokens,
                 outputTokens: totalUsage?.outputTokens,
               },
               finishReason,
-              stepsCount: steps.length,
             }) + '\n';
 
+          console.log('steps count', steps.length);
           controller.enqueue(new TextEncoder().encode(finalData));
           controller.close();
 
           console.log('🧠 streamText: streaming completed');
         } catch (error) {
+          // ========================================
+          // ERROR HANDLING
+          // ========================================
+          // Handle any catastrophic errors during the streaming process
           console.error('🧠 streamText streaming error:', error);
           const errorData =
             JSON.stringify({
@@ -382,6 +500,10 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
       },
     });
 
+    // ========================================
+    // STREAM RESPONSE CONFIGURATION
+    // ========================================
+    // Return the streaming response with appropriate headers
     return new Response(stream, {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
@@ -390,6 +512,10 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
       },
     });
   } catch (err: unknown) {
+    // ========================================
+    // TOP-LEVEL ERROR HANDLING
+    // ========================================
+    // Handle any errors that occur outside the streaming context
     console.error('/api/agent error', err);
     const message = err instanceof Error ? err.message : 'Unknown error';
     return new Response(JSON.stringify({ error: message }), { status: 500 });

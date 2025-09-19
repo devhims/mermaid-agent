@@ -110,10 +110,12 @@ export async function GET() {
       },
     });
 
+    const tools = { checkIngredientAvailability };
+
     // Use streamText with tools AND experimental_output for structured object results
     const result = streamText({
       model: openai('gpt-4o-mini'), // Using gpt-4o-mini instead of gpt-4.1 for better availability
-      tools: { checkIngredientAvailability },
+      tools,
       experimental_output: Output.object({
         schema: RecipeSchema,
       }),
@@ -163,7 +165,7 @@ export async function GET() {
                     }) + '\n';
 
                   controller.enqueue(new TextEncoder().encode(data));
-                } catch (parseError) {
+                } catch {
                   // JSON not complete yet, send raw text update
                   const data =
                     JSON.stringify({
@@ -180,7 +182,7 @@ export async function GET() {
                 console.log(
                   `🔧 Tool call #${eventCount}:`,
                   event.toolName,
-                  (event as any).input || (event as any).args
+                  event.input
                 );
 
                 // Send tool call event
@@ -189,7 +191,9 @@ export async function GET() {
                     type: 'tool-call',
                     count: eventCount,
                     toolName: event.toolName,
-                    args: (event as any).input || (event as any).args,
+                    toolCallId: event.toolCallId,
+                    providerExecuted: event.providerExecuted,
+                    args: event.input,
                     timestamp: new Date().toISOString(),
                   }) + '\n';
 
@@ -198,7 +202,7 @@ export async function GET() {
                 console.log(
                   `✅ Tool result #${eventCount}:`,
                   event.toolName,
-                  (event as any).output || (event as any).result
+                  event.output
                 );
 
                 // Send tool result event
@@ -207,7 +211,10 @@ export async function GET() {
                     type: 'tool-result',
                     count: eventCount,
                     toolName: event.toolName,
-                    result: (event as any).output || (event as any).result,
+                    toolCallId: event.toolCallId,
+                    providerExecuted: event.providerExecuted,
+                    preliminary: event.preliminary,
+                    result: event.output,
                     timestamp: new Date().toISOString(),
                   }) + '\n';
 
@@ -255,7 +262,7 @@ export async function GET() {
             // The experimental_output should be available in onFinish callback
             // For now, try to parse the text as JSON
             finalObject = JSON.parse(finalText);
-          } catch (e) {
+          } catch {
             console.log('Could not parse final text as JSON:', finalText);
             finalObject = null;
           }
@@ -460,7 +467,7 @@ export async function POST(req: NextRequest) {
                     }) + '\n';
 
                   controller.enqueue(new TextEncoder().encode(data));
-                } catch (parseError) {
+                } catch {
                   // JSON not complete yet, send raw text update
                   const data =
                     JSON.stringify({
@@ -477,7 +484,7 @@ export async function POST(req: NextRequest) {
                 console.log(
                   `🔧 Tool call #${eventCount}:`,
                   event.toolName,
-                  (event as any).input || (event as any).args
+                  event.input
                 );
 
                 // Send tool call event
@@ -486,7 +493,9 @@ export async function POST(req: NextRequest) {
                     type: 'tool-call',
                     count: eventCount,
                     toolName: event.toolName,
-                    args: (event as any).input || (event as any).args,
+                    toolCallId: event.toolCallId,
+                    providerExecuted: event.providerExecuted,
+                    args: event.input,
                     timestamp: new Date().toISOString(),
                   }) + '\n';
 
@@ -495,7 +504,7 @@ export async function POST(req: NextRequest) {
                 console.log(
                   `✅ Tool result #${eventCount}:`,
                   event.toolName,
-                  (event as any).output || (event as any).result
+                  event.output
                 );
 
                 // Send tool result event
@@ -504,7 +513,10 @@ export async function POST(req: NextRequest) {
                     type: 'tool-result',
                     count: eventCount,
                     toolName: event.toolName,
-                    result: (event as any).output || (event as any).result,
+                    toolCallId: event.toolCallId,
+                    providerExecuted: event.providerExecuted,
+                    preliminary: event.preliminary,
+                    result: event.output,
                     timestamp: new Date().toISOString(),
                   }) + '\n';
 
@@ -552,7 +564,7 @@ export async function POST(req: NextRequest) {
             // The experimental_output should be available in onFinish callback
             // For now, try to parse the text as JSON
             finalObject = JSON.parse(finalText);
-          } catch (e) {
+          } catch {
             console.log('Could not parse final text as JSON:', finalText);
             finalObject = null;
           }

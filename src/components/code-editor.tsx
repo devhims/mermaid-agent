@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { Code, Copy, RotateCcw } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Code, Copy, RotateCcw, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
@@ -11,6 +11,7 @@ interface AgentResult {
   message: string;
   finalCode?: string;
   stepsUsed?: number;
+  toolCallCount?: number;
   steps?: { action: string; details: string }[];
 }
 
@@ -19,14 +20,17 @@ interface CodeEditorProps {
   onCodeChange: (code: string) => void;
   onReset: () => void;
   onImport: (file: File) => void;
-  onExport: () => void;
   agentResult?: AgentResult | null;
   agentStream?: {
     steps: { action: string; details: string }[];
     message?: string;
     finalCode?: string;
     validated?: boolean;
-    usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number };
+    usage?: {
+      totalTokens?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+    };
     status?: {
       label: string;
       tone: 'progress' | 'success' | 'error';
@@ -47,7 +51,7 @@ interface CodeEditorProps {
   } | null;
   diagramError?: string | null;
   isCollapsed?: boolean;
-  onToggleCollapse?: () => void;
+  onToggleCollapse?: (open: boolean) => void;
 }
 
 export function CodeEditor({
@@ -55,7 +59,6 @@ export function CodeEditor({
   onCodeChange,
   onReset,
   onImport,
-  onExport,
   agentResult,
   agentStream,
   onAcceptAgentResult,
@@ -71,6 +74,7 @@ export function CodeEditor({
 }: CodeEditorProps) {
   const [isOpen, setIsOpen] = useState(!isCollapsed);
   const [stepsOpen, setStepsOpen] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Sync internal state with external collapsed state
   useEffect(() => {
@@ -83,10 +87,23 @@ export function CodeEditor({
     else setStepsOpen(false);
   }, [agentStreaming]);
 
-  const handleToggle = () => {
-    const newState = !isOpen;
-    setIsOpen(newState);
-    onToggleCollapse?.();
+  const handleOpenChange = (open: boolean) => {
+    setIsOpen(open);
+    onToggleCollapse?.(open);
+  };
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelection: React.ChangeEventHandler<HTMLInputElement> = (
+    event
+  ) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      onImport(file);
+    }
+    event.target.value = '';
   };
 
   const showFixButton = !!diagramError && !agentStreaming && !agentLoading;
@@ -108,7 +125,11 @@ export function CodeEditor({
     return (
       <div
         className={`text-[11px] px-2.5 py-1 rounded-md border font-medium shadow-sm flex items-center gap-2 ${toneClasses}`}
-        title={status.detail && status.detail !== status.label ? status.detail : undefined}
+        title={
+          status.detail && status.detail !== status.label
+            ? status.detail
+            : undefined
+        }
       >
         <span
           className={`inline-flex h-2 w-2 rounded-full ${
@@ -125,40 +146,47 @@ export function CodeEditor({
   };
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+    <Collapsible open={isOpen} onOpenChange={handleOpenChange}>
       <div className='relative'>
+        <input
+          ref={fileInputRef}
+          type='file'
+          accept='.mmd,.md,.txt,.mermaid,.json'
+          className='hidden'
+          onChange={handleFileSelection}
+        />
         <CollapsibleContent className='space-y-4'>
           <div className='rounded-lg border bg-card/50 backdrop-blur-sm shadow-sm p-4 space-y-4'>
             {/* Header */}
-              <div className='flex items-center justify-between'>
-                <div className='flex items-center gap-2'>
-                  <Code className='h-4 w-4 text-muted-foreground' />
-                  <span className='text-sm font-medium'>Mermaid Code</span>
-                </div>
-                <div className='flex items-center gap-2'>
-                  <Button
-                    variant='ghost'
-                    size='sm'
-                    onClick={onReset}
-                    className='h-8 px-2 text-xs cursor-pointer'
-                  >
-                    <RotateCcw className='h-3 w-3' />
-                  </Button>
-
-                  {onFixWithAgent && showFixButton && (
-                    <Button
-                      variant='outline'
-                      size='sm'
-                      onClick={onFixWithAgent}
-                      disabled={agentLoading}
-                      className='h-8 px-2 text-xs text-emerald-600 border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:text-emerald-400 dark:border-emerald-800 shadow-sm cursor-pointer'
-                    >
-                      ✨ Fix with AI
-                    </Button>
-                  )}
-                  {!showFixButton && renderAgentStatus()}
-                </div>
+            <div className='flex items-center justify-between'>
+              <div className='flex items-center gap-2'>
+                <Code className='h-4 w-4 text-muted-foreground' />
+                <span className='text-sm font-medium'>Mermaid Code</span>
               </div>
+              <div className='flex items-center gap-2'>
+                <Button
+                  variant='ghost'
+                  size='sm'
+                  onClick={onReset}
+                  className='h-8 px-2 text-xs cursor-pointer'
+                >
+                  <RotateCcw className='h-3 w-3' />
+                </Button>
+
+                {onFixWithAgent && showFixButton && (
+                  <Button
+                    variant='default'
+                    size='sm'
+                    onClick={onFixWithAgent}
+                    disabled={agentLoading}
+                    className='h-8 px-2 text-xs shadow-sm cursor-pointer bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600'
+                  >
+                    ✨ Auto Fix
+                  </Button>
+                )}
+                {!showFixButton && renderAgentStatus()}
+              </div>
+            </div>
 
             <Separator />
 
@@ -169,14 +197,26 @@ export function CodeEditor({
                   Editor
                 </span>
 
-                <Button
-                  variant='outline'
-                  size='sm'
-                  onClick={() => navigator.clipboard.writeText(code)}
-                  className='text-xs cursor-pointer'
-                >
-                  <Copy className='h-3 w-3' />
-                </Button>
+                <div className='flex items-center gap-2'>
+                  <Button
+                    variant='outline'
+                    size='sm'
+                    onClick={handleImportClick}
+                    className='h-8 px-2 text-xs cursor-pointer'
+                  >
+                    <Upload className='h-3 w-3 mr-1' />
+                    Import
+                  </Button>
+
+                  <Button
+                    variant='outline'
+                    size='sm'
+                    onClick={() => navigator.clipboard.writeText(code)}
+                    className='text-xs cursor-pointer'
+                  >
+                    <Copy className='h-3 w-3' />
+                  </Button>
+                </div>
               </div>
 
               <textarea
@@ -198,33 +238,72 @@ export function CodeEditor({
                 }`}
               >
                 <div className='flex items-center justify-between'>
-                  <span
-                    className={`text-sm font-medium ${
-                      agentStream?.validated || agentResult?.success
-                        ? 'text-blue-800 dark:text-blue-200'
-                        : 'text-yellow-800 dark:text-yellow-200'
-                    }`}
-                  >
-                    🤖 Agent {agentStream ? '(Live)' : 'Result'}{' '}
-                    {agentResult?.stepsUsed && `(${agentResult.stepsUsed} steps)`}
-                  </span>
-                  <div className='flex gap-2'>
-                    <Button
-                      variant='outline'
-                      size='sm'
-                      onClick={onStopAgent}
-                      disabled={!agentLoading}
-                      className='h-7 px-2 text-xs'
+                  <div className='flex flex-col gap-1'>
+                    <span
+                      className={`text-sm font-medium ${
+                        agentStream?.validated || agentResult?.success
+                          ? 'text-slate-700 dark:text-blue-200'
+                          : 'text-amber-700 dark:text-yellow-200'
+                      }`}
                     >
-                      Stop
-                    </Button>
+                      🤖 Agent {agentStream ? '(Live)' : 'Result'}
+                    </span>
+                    {(() => {
+                      const stepCount =
+                        typeof agentResult?.stepsUsed === 'number'
+                          ? agentResult.stepsUsed
+                          : undefined;
+                      const toolCallCount =
+                        typeof agentResult?.toolCallCount === 'number'
+                          ? agentResult.toolCallCount
+                          : undefined;
+
+                      if (stepCount == null && toolCallCount == null) {
+                        return null;
+                      }
+
+                      const parts: string[] = [];
+                      if (stepCount != null) {
+                        parts.push(
+                          `${stepCount} ${stepCount === 1 ? 'step' : 'steps'}`
+                        );
+                      }
+                      if (toolCallCount != null) {
+                        parts.push(
+                          `${toolCallCount} ${
+                            toolCallCount === 1 ? 'tool call' : 'tool calls'
+                          }`
+                        );
+                      }
+
+                      return (
+                        <span className='text-xs text-muted-foreground'>
+                          {parts.join(' • ')}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  <div className='flex gap-2'>
+                    {agentStreaming && (
+                      <div className='flex gap-2 '>
+                        <Button
+                          variant='destructive'
+                          size='sm'
+                          onClick={onStopAgent}
+                          disabled={!agentLoading}
+                          className='h-7 px-2 text-xs cursor-pointer'
+                        >
+                          Stop
+                        </Button>
+                      </div>
+                    )}
                     {((agentStream?.validated && agentStream?.finalCode) ||
                       (agentResult?.success && agentResult?.finalCode)) &&
                       onAcceptAgentResult && (
                         <Button
                           size='sm'
                           onClick={onAcceptAgentResult}
-                          className='h-7 px-2 text-xs bg-blue-600 hover:bg-blue-700'
+                          className='h-7 px-2 text-xs bg-blue-600 hover:bg-blue-700 cursor-pointer'
                         >
                           Apply
                         </Button>
@@ -234,7 +313,7 @@ export function CodeEditor({
                         variant='outline'
                         size='sm'
                         onClick={onDismissAgentResult}
-                        className='h-7 px-2 text-xs'
+                        className='h-7 px-2 text-xs cursor-pointer'
                       >
                         Dismiss
                       </Button>
@@ -269,10 +348,14 @@ export function CodeEditor({
                   <details
                     className='text-xs'
                     open={stepsOpen}
-                    onToggle={(e) => setStepsOpen((e.target as HTMLDetailsElement).open)}
+                    onToggle={(e) =>
+                      setStepsOpen((e.target as HTMLDetailsElement).open)
+                    }
                   >
                     <summary className='cursor-pointer text-muted-foreground hover:text-foreground'>
-                      View Steps ({agentStream?.steps?.length || agentResult?.steps?.length})
+                      View Activity (
+                      {agentStream?.steps?.length || agentResult?.steps?.length}
+                      )
                     </summary>
                     <div className='mt-2 space-y-1'>
                       {(agentStream?.steps || agentResult?.steps || []).map(
@@ -295,7 +378,9 @@ export function CodeEditor({
                 {/* Usage footer */}
                 {agentStream?.usage && (
                   <div className='pt-2 mt-2 border-t text-[10px] text-muted-foreground'>
-                    Usage — input: {agentStream.usage.inputTokens ?? '-'}, output: {agentStream.usage.outputTokens ?? '-'}, total: {agentStream.usage.totalTokens ?? '-'}
+                    Usage — input: {agentStream.usage.inputTokens ?? '-'},
+                    output: {agentStream.usage.outputTokens ?? '-'}, total:{' '}
+                    {agentStream.usage.totalTokens ?? '-'}
                   </div>
                 )}
               </div>

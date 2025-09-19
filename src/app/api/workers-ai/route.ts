@@ -1,11 +1,29 @@
 import { createWorkersAI } from 'workers-ai-provider';
 import { streamText, tool, stepCountIs } from 'ai';
+import type {
+  InferToolInput,
+  InferToolOutput,
+  StreamTextResult,
+  TypedToolCall,
+  TypedToolResult,
+} from 'ai';
 import { z } from 'zod';
 import { NextRequest } from 'next/server';
 import { validateMermaidCode } from '../tools';
 
 // Track tool call count for debugging
 let toolCallCount = 0;
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const safeParseJson = (value: string): unknown => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
 
 // Mermaid validator tool execute function
 const executeMermaidValidator = async ({
@@ -47,6 +65,268 @@ const mermaidValidator = tool({
   execute: executeMermaidValidator,
 });
 
+const tools = { mermaidValidator };
+type Tools = typeof tools;
+type ValidatorInput = InferToolInput<typeof mermaidValidator>;
+type ValidatorOutput = InferToolOutput<typeof mermaidValidator>;
+
+type PotentialToolCallJson = {
+  name: string;
+  parameters?: unknown;
+};
+
+const isValidatorInput = (value: unknown): value is ValidatorInput =>
+  isObject(value) &&
+  typeof value.fixedCode === 'string' &&
+  typeof value.explanation === 'string';
+
+const isValidatorCall = (
+  call: TypedToolCall<Tools>
+): call is TypedToolCall<Tools> & {
+  toolName: 'mermaidValidator';
+  dynamic?: false | undefined;
+  input: ValidatorInput;
+} => call.toolName === 'mermaidValidator' && call.dynamic !== true;
+
+const isValidatorResult = (
+  result: TypedToolResult<Tools>
+): result is TypedToolResult<Tools> & {
+  toolName: 'mermaidValidator';
+  dynamic?: false | undefined;
+  output: ValidatorOutput;
+} => result.toolName === 'mermaidValidator' && result.dynamic !== true;
+
+const getValidatorArgsFromCall = (
+  call: TypedToolCall<Tools>
+): ValidatorInput | null => {
+  if (isValidatorCall(call)) {
+    return call.input;
+  }
+  if (isValidatorInput(call.input)) {
+    return call.input;
+  }
+  return null;
+};
+
+const isPotentialToolCall = (
+  value: unknown
+): value is PotentialToolCallJson =>
+  isObject(value) && typeof value.name === 'string';
+
+const createNdjsonStream = (
+  result: StreamTextResult<Tools, never>,
+  logs: { start: string; complete: string; error: string }
+) =>
+  new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        console.log(logs.start);
+
+        let eventCount = 0;
+        let accumulatedText = '';
+        let hasFinished = false;
+
+        const streamPromise = (async () => {
+          for await (const event of result.fullStream) {
+            if (hasFinished) break;
+
+            eventCount++;
+            console.log(
+              `📡 Event #${eventCount}: ${event.type}`,
+              event.type === 'text-delta' ? `"${event.text}"` : event
+            );
+
+            if (event.type === 'text-delta') {
+              accumulatedText += event.text;
+
+              const trimmed = accumulatedText.trim();
+              if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+                const parsed = safeParseJson(trimmed);
+                if (
+                  isPotentialToolCall(parsed) &&
+                  parsed.name === 'mermaidValidator' &&
+                  isValidatorInput(parsed.parameters)
+                ) {
+                  console.log(
+                    `🔧 Tool call #${eventCount}:`,
+                    parsed.name,
+                    parsed.parameters
+                  );
+
+                  const toolResult = await executeMermaidValidator(
+                    parsed.parameters
+                  );
+
+                  const callData =
+                    JSON.stringify({
+                      type: 'tool-call',
+                      count: eventCount,
+                      toolName: parsed.name,
+                      args: parsed.parameters,
+                      timestamp: new Date().toISOString(),
+                    }) + '\n';
+
+                  controller.enqueue(new TextEncoder().encode(callData));
+
+                  const resultData =
+                    JSON.stringify({
+                      type: 'tool-result',
+                      count: eventCount,
+                      toolName: parsed.name,
+                      result: toolResult,
+                      timestamp: new Date().toISOString(),
+                    }) + '\n';
+
+                  controller.enqueue(new TextEncoder().encode(resultData));
+
+                  accumulatedText = '';
+                }
+              }
+
+              const data =
+                JSON.stringify({
+                  type: 'text-delta',
+                  count: eventCount,
+                  textDelta: event.text,
+                  accumulatedText,
+                  timestamp: new Date().toISOString(),
+                }) + '\n';
+
+              controller.enqueue(new TextEncoder().encode(data));
+            } else if (event.type === 'tool-call') {
+              console.log(
+                `🔧 Tool call #${eventCount}:`,
+                event.toolName,
+                event.input
+              );
+
+              let manualResult:
+                | ValidatorOutput
+                | { error: string }
+                | null = null;
+
+              if (event.toolName === 'mermaidValidator') {
+                const validatorArgs = getValidatorArgsFromCall(event);
+                if (validatorArgs) {
+                  try {
+                    manualResult = await executeMermaidValidator(validatorArgs);
+                  } catch (error) {
+                    console.error('Tool execution error:', error);
+                    const errorMessage =
+                      error instanceof Error
+                        ? error.message
+                        : 'Tool execution failed';
+                    manualResult = { error: errorMessage };
+                  }
+                }
+              }
+
+              const data =
+                JSON.stringify({
+                  type: 'tool-call',
+                  count: eventCount,
+                  toolName: event.toolName,
+                  toolCallId: event.toolCallId,
+                  providerExecuted: event.providerExecuted,
+                  args: event.input,
+                  timestamp: new Date().toISOString(),
+                }) + '\n';
+
+              controller.enqueue(new TextEncoder().encode(data));
+
+              if (!event.providerExecuted && manualResult) {
+                const manualResultData =
+                  JSON.stringify({
+                    type: 'tool-result',
+                    count: eventCount,
+                    toolName: event.toolName,
+                    toolCallId: event.toolCallId,
+                    providerExecuted: true,
+                    result: manualResult,
+                    timestamp: new Date().toISOString(),
+                  }) + '\n';
+
+                controller.enqueue(
+                  new TextEncoder().encode(manualResultData)
+                );
+              }
+            } else if (event.type === 'tool-result') {
+              console.log(
+                `✅ Tool result #${eventCount}:`,
+                event.toolName,
+                event.output
+              );
+
+              const data =
+                JSON.stringify({
+                  type: 'tool-result',
+                  count: eventCount,
+                  toolName: event.toolName,
+                  toolCallId: event.toolCallId,
+                  providerExecuted: event.providerExecuted,
+                  preliminary: event.preliminary,
+                  result: event.output,
+                  timestamp: new Date().toISOString(),
+                }) + '\n';
+
+              controller.enqueue(new TextEncoder().encode(data));
+            } else if (event.type === 'error') {
+              console.error(`❌ Error #${eventCount}:`, event.error);
+
+              const data =
+                JSON.stringify({
+                  type: 'error',
+                  count: eventCount,
+                  error: event.error,
+                  timestamp: new Date().toISOString(),
+                }) + '\n';
+
+              controller.enqueue(new TextEncoder().encode(data));
+            } else if (event.type === 'finish') {
+              console.log(`🏁 Finish #${eventCount}:`, event.finishReason);
+
+              const data =
+                JSON.stringify({
+                  type: 'finish',
+                  count: eventCount,
+                  finishReason: event.finishReason,
+                  usage: event.totalUsage,
+                  timestamp: new Date().toISOString(),
+                }) + '\n';
+
+              controller.enqueue(new TextEncoder().encode(data));
+              hasFinished = true;
+              controller.close();
+              break;
+            } else {
+              console.log(
+                `🔇 Skipping internal event #${eventCount}: ${event.type}`
+              );
+            }
+          }
+        })();
+
+        await streamPromise;
+
+        console.log(logs.complete);
+      } catch (error) {
+        console.error(logs.error, error);
+        const errorData =
+          JSON.stringify({
+            type: 'error',
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Unknown streaming error',
+            timestamp: new Date().toISOString(),
+          }) + '\n';
+
+        controller.enqueue(new TextEncoder().encode(errorData));
+        controller.close();
+      }
+    },
+  });
+
 // Extremely challenging mermaid diagram with multiple complex syntax errors
 const CHALLENGING_DIAGRAM = `graph TD
     A[Start] --> B{Decision}
@@ -87,15 +367,17 @@ export async function GET() {
 
   const result = streamText({
     model: workersai('@cf/meta/llama-4-scout-17b-16e-instruct'),
-    tools: { mermaidValidator }, // Pass tools parameter to streamText
+    tools,
     stopWhen: [
       stepCountIs(6), // Maximum 6 steps to prevent infinite loops
       ({ steps }) => {
         const lastStep = steps[steps.length - 1];
-        return (lastStep?.toolResults || []).some((tr) => {
-          const output = tr.output as { validated?: boolean };
-          return output?.validated === true;
-        });
+        if (!lastStep) return false;
+        return lastStep.toolResults.some(
+          (toolResult) =>
+            isValidatorResult(toolResult) &&
+            toolResult.output.validated === true
+        );
       },
     ],
     onError: ({ error }) => {
@@ -116,213 +398,10 @@ ${CHALLENGING_DIAGRAM}
 Use the mermaidValidator tool to validate your fix.`,
   });
 
-  // Create a ReadableStream for NDJSON (Newline Delimited JSON) format
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        console.log('🧠 Workers AI streaming with NDJSON: starting...');
-
-        let eventCount = 0;
-        let accumulatedText = '';
-        let hasFinished = false;
-
-        // Stream all events including tool calls and text deltas
-        const streamPromise = (async () => {
-          for await (const event of result.fullStream) {
-            if (hasFinished) break; // Stop if we've already sent completion
-
-            eventCount++;
-            console.log(
-              `📡 Event #${eventCount}: ${event.type}`,
-              event.type === 'text-delta' ? `"${event.text}"` : event
-            );
-
-            // Handle all event types
-            if (event.type === 'text-delta') {
-              console.log(`📝 Text delta #${eventCount}: "${event.text}"`);
-              accumulatedText += event.text;
-
-              // Check if accumulated text contains a complete JSON tool call
-              let toolDetected = false;
-              if (
-                accumulatedText.trim().startsWith('{') &&
-                accumulatedText.trim().endsWith('}')
-              ) {
-                try {
-                  const potentialJson = JSON.parse(accumulatedText.trim());
-                  if (
-                    potentialJson.name === 'mermaidValidator' &&
-                    potentialJson.parameters
-                  ) {
-                    console.log(
-                      `🔧 Tool call #${eventCount}:`,
-                      potentialJson.name,
-                      potentialJson.parameters
-                    );
-
-                    // Execute the tool manually
-                    const toolResult = await executeMermaidValidator(
-                      potentialJson.parameters
-                    );
-
-                    // Send tool call event
-                    const callData =
-                      JSON.stringify({
-                        type: 'tool-call',
-                        count: eventCount,
-                        toolName: potentialJson.name,
-                        args: potentialJson.parameters,
-                        timestamp: new Date().toISOString(),
-                      }) + '\n';
-
-                    controller.enqueue(new TextEncoder().encode(callData));
-
-                    // Send tool result event
-                    const resultData =
-                      JSON.stringify({
-                        type: 'tool-result',
-                        count: eventCount,
-                        toolName: potentialJson.name,
-                        result: toolResult,
-                        timestamp: new Date().toISOString(),
-                      }) + '\n';
-
-                    controller.enqueue(new TextEncoder().encode(resultData));
-
-                    // Clear accumulated text after processing tool call
-                    accumulatedText = '';
-                    toolDetected = true;
-                  }
-                } catch (error) {
-                  // Not a complete/valid JSON yet, continue accumulating
-                }
-              }
-
-              // Send text delta for progress indication
-              const data =
-                JSON.stringify({
-                  type: 'text-delta',
-                  count: eventCount,
-                  textDelta: event.text,
-                  accumulatedText,
-                  timestamp: new Date().toISOString(),
-                }) + '\n';
-
-              controller.enqueue(new TextEncoder().encode(data));
-            } else if (event.type === 'tool-call') {
-              console.log(
-                `🔧 Tool call #${eventCount}:`,
-                event.toolName,
-                (event as any).input || (event as any).args
-              );
-
-              // Since workers-ai-provider doesn't execute tools, we need to do it manually
-              try {
-                if (event.toolName === 'mermaidValidator') {
-                  const args = (event as any).input || (event as any).args;
-                  const toolResult = await executeMermaidValidator(args);
-
-                  // Patch the result for the AI SDK
-                  (event as any).result = toolResult;
-                }
-              } catch (error) {
-                console.error('Tool execution error:', error);
-                (event as any).result = {
-                  error:
-                    error instanceof Error
-                      ? error.message
-                      : 'Tool execution failed',
-                };
-              }
-
-              // Send tool call event
-              const data =
-                JSON.stringify({
-                  type: 'tool-call',
-                  count: eventCount,
-                  toolName: event.toolName,
-                  args: (event as any).input || (event as any).args,
-                  timestamp: new Date().toISOString(),
-                }) + '\n';
-
-              controller.enqueue(new TextEncoder().encode(data));
-            } else if (event.type === 'tool-result') {
-              console.log(
-                `✅ Tool result #${eventCount}:`,
-                event.toolName,
-                (event as any).output || (event as any).result
-              );
-
-              // Send tool result event
-              const data =
-                JSON.stringify({
-                  type: 'tool-result',
-                  count: eventCount,
-                  toolName: event.toolName,
-                  result: (event as any).output || (event as any).result,
-                  timestamp: new Date().toISOString(),
-                }) + '\n';
-
-              controller.enqueue(new TextEncoder().encode(data));
-            } else if (event.type === 'error') {
-              console.error(`❌ Error #${eventCount}:`, event.error);
-
-              // Send error event
-              const data =
-                JSON.stringify({
-                  type: 'error',
-                  count: eventCount,
-                  error: event.error,
-                  timestamp: new Date().toISOString(),
-                }) + '\n';
-
-              controller.enqueue(new TextEncoder().encode(data));
-            } else if (event.type === 'finish') {
-              console.log(`🏁 Finish #${eventCount}:`, event.finishReason);
-
-              // Send finish event
-              const data =
-                JSON.stringify({
-                  type: 'finish',
-                  count: eventCount,
-                  finishReason: event.finishReason,
-                  usage: event.totalUsage,
-                  timestamp: new Date().toISOString(),
-                }) + '\n';
-
-              controller.enqueue(new TextEncoder().encode(data));
-              hasFinished = true;
-              controller.close();
-              break;
-            } else {
-              // Skip internal AI SDK events that don't matter for UI updates
-              console.log(
-                `🔇 Skipping internal event #${eventCount}: ${event.type}`
-              );
-            }
-          }
-        })();
-
-        // Wait for the stream to complete
-        await streamPromise;
-
-        console.log('🧠 Workers AI streaming completed');
-      } catch (error) {
-        console.error('🧠 Workers AI streaming error:', error);
-        const errorData =
-          JSON.stringify({
-            type: 'error',
-            error:
-              error instanceof Error
-                ? error.message
-                : 'Unknown streaming error',
-            timestamp: new Date().toISOString(),
-          }) + '\n';
-
-        controller.enqueue(new TextEncoder().encode(errorData));
-        controller.close();
-      }
-    },
+  const stream = createNdjsonStream(result, {
+    start: '🧠 Workers AI streaming with NDJSON: starting...',
+    complete: '🧠 Workers AI streaming completed',
+    error: '🧠 Workers AI streaming error:',
   });
 
   return new Response(stream, {
@@ -384,15 +463,17 @@ export async function POST(request: NextRequest) {
 
     const result = streamText({
       model: workersai('@cf/meta/llama-3.3-70b-instruct-fp8-fast'),
-      tools: { mermaidValidator }, // Pass tools parameter to streamText
+      tools,
       stopWhen: [
         stepCountIs(6), // Maximum 6 steps to prevent infinite loops
         ({ steps }) => {
           const lastStep = steps[steps.length - 1];
-          return (lastStep?.toolResults || []).some((tr) => {
-            const output = tr.output as { validated?: boolean };
-            return output?.validated === true;
-          });
+          if (!lastStep) return false;
+          return lastStep.toolResults.some(
+            (toolResult) =>
+              isValidatorResult(toolResult) &&
+              toolResult.output.validated === true
+          );
         },
       ],
       onError: ({ error }) => {
@@ -415,215 +496,10 @@ Parser Error: ${actualError}
 Use the mermaidValidator tool to validate your fix.`,
     });
 
-    // Create a ReadableStream for NDJSON (Newline Delimited JSON) format
-    const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          console.log(
-            '🧠 Workers AI streaming with NDJSON: starting POST request...'
-          );
-
-          let eventCount = 0;
-          let accumulatedText = '';
-          let hasFinished = false;
-
-          // Stream all events including tool calls and text deltas
-          const streamPromise = (async () => {
-            for await (const event of result.fullStream) {
-              if (hasFinished) break; // Stop if we've already sent completion
-
-              eventCount++;
-              console.log(
-                `📡 Event #${eventCount}: ${event.type}`,
-                event.type === 'text-delta' ? `"${event.text}"` : event
-              );
-
-              // Handle all event types
-              if (event.type === 'text-delta') {
-                console.log(`📝 Text delta #${eventCount}: "${event.text}"`);
-                accumulatedText += event.text;
-
-                // Check if accumulated text contains a complete JSON tool call
-                let toolDetected = false;
-                if (
-                  accumulatedText.trim().startsWith('{') &&
-                  accumulatedText.trim().endsWith('}')
-                ) {
-                  try {
-                    const potentialJson = JSON.parse(accumulatedText.trim());
-                    if (
-                      potentialJson.name === 'mermaidValidator' &&
-                      potentialJson.parameters
-                    ) {
-                      console.log(
-                        `🔧 Tool call #${eventCount}:`,
-                        potentialJson.name,
-                        potentialJson.parameters
-                      );
-
-                      // Execute the tool manually
-                      const toolResult = await executeMermaidValidator(
-                        potentialJson.parameters
-                      );
-
-                      // Send tool call event
-                      const callData =
-                        JSON.stringify({
-                          type: 'tool-call',
-                          count: eventCount,
-                          toolName: potentialJson.name,
-                          args: potentialJson.parameters,
-                          timestamp: new Date().toISOString(),
-                        }) + '\n';
-
-                      controller.enqueue(new TextEncoder().encode(callData));
-
-                      // Send tool result event
-                      const resultData =
-                        JSON.stringify({
-                          type: 'tool-result',
-                          count: eventCount,
-                          toolName: potentialJson.name,
-                          result: toolResult,
-                          timestamp: new Date().toISOString(),
-                        }) + '\n';
-
-                      controller.enqueue(new TextEncoder().encode(resultData));
-
-                      // Clear accumulated text after processing tool call
-                      accumulatedText = '';
-                      toolDetected = true;
-                    }
-                  } catch (error) {
-                    // Not a complete/valid JSON yet, continue accumulating
-                  }
-                }
-
-                // Send text delta for progress indication
-                const data =
-                  JSON.stringify({
-                    type: 'text-delta',
-                    count: eventCount,
-                    textDelta: event.text,
-                    accumulatedText,
-                    timestamp: new Date().toISOString(),
-                  }) + '\n';
-
-                controller.enqueue(new TextEncoder().encode(data));
-              } else if (event.type === 'tool-call') {
-                console.log(
-                  `🔧 Tool call #${eventCount}:`,
-                  event.toolName,
-                  (event as any).input || (event as any).args
-                );
-
-                // Since workers-ai-provider doesn't execute tools, we need to do it manually
-                try {
-                  if (event.toolName === 'mermaidValidator') {
-                    const args = (event as any).input || (event as any).args;
-                    const toolResult = await executeMermaidValidator(args);
-
-                    // Patch the result for the AI SDK
-                    (event as any).result = toolResult;
-                  }
-                } catch (error) {
-                  console.error('Tool execution error:', error);
-                  (event as any).result = {
-                    error:
-                      error instanceof Error
-                        ? error.message
-                        : 'Tool execution failed',
-                  };
-                }
-
-                // Send tool call event
-                const data =
-                  JSON.stringify({
-                    type: 'tool-call',
-                    count: eventCount,
-                    toolName: event.toolName,
-                    args: (event as any).input || (event as any).args,
-                    timestamp: new Date().toISOString(),
-                  }) + '\n';
-
-                controller.enqueue(new TextEncoder().encode(data));
-              } else if (event.type === 'tool-result') {
-                console.log(
-                  `✅ Tool result #${eventCount}:`,
-                  event.toolName,
-                  (event as any).output || (event as any).result
-                );
-
-                // Send tool result event
-                const data =
-                  JSON.stringify({
-                    type: 'tool-result',
-                    count: eventCount,
-                    toolName: event.toolName,
-                    result: (event as any).output || (event as any).result,
-                    timestamp: new Date().toISOString(),
-                  }) + '\n';
-
-                controller.enqueue(new TextEncoder().encode(data));
-              } else if (event.type === 'error') {
-                console.error(`❌ Error #${eventCount}:`, event.error);
-
-                // Send error event
-                const data =
-                  JSON.stringify({
-                    type: 'error',
-                    count: eventCount,
-                    error: event.error,
-                    timestamp: new Date().toISOString(),
-                  }) + '\n';
-
-                controller.enqueue(new TextEncoder().encode(data));
-              } else if (event.type === 'finish') {
-                console.log(`🏁 Finish #${eventCount}:`, event.finishReason);
-
-                // Send finish event
-                const data =
-                  JSON.stringify({
-                    type: 'finish',
-                    count: eventCount,
-                    finishReason: event.finishReason,
-                    usage: event.totalUsage,
-                    timestamp: new Date().toISOString(),
-                  }) + '\n';
-
-                controller.enqueue(new TextEncoder().encode(data));
-                hasFinished = true;
-                controller.close();
-                break;
-              } else {
-                // Skip internal AI SDK events that don't matter for UI updates
-                console.log(
-                  `🔇 Skipping internal event #${eventCount}: ${event.type}`
-                );
-              }
-            }
-          })();
-
-          // Wait for the stream to complete
-          await streamPromise;
-
-          console.log('🧠 Workers AI streaming completed');
-        } catch (error) {
-          console.error('🧠 Workers AI streaming error:', error);
-          const errorData =
-            JSON.stringify({
-              type: 'error',
-              error:
-                error instanceof Error
-                  ? error.message
-                  : 'Unknown streaming error',
-              timestamp: new Date().toISOString(),
-            }) + '\n';
-
-          controller.enqueue(new TextEncoder().encode(errorData));
-          controller.close();
-        }
-      },
+    const stream = createNdjsonStream(result, {
+      start: '🧠 Workers AI streaming with NDJSON: starting POST request...',
+      complete: '🧠 Workers AI streaming completed',
+      error: '🧠 Workers AI streaming error:',
     });
 
     return new Response(stream, {

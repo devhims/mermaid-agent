@@ -5,7 +5,13 @@ import {
   stepCountIs,
   tool,
   generateText,
-  type UIMessage,
+} from 'ai';
+import type {
+  UIMessage,
+  TypedToolCall,
+  TypedToolResult,
+  InferToolInput,
+  InferToolOutput,
 } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
@@ -99,18 +105,32 @@ export async function POST(req: NextRequest) {
         },
       });
 
+      const tools = { mermaidValidator };
+      type Tools = typeof tools;
+      type ValidatorOutput = InferToolOutput<typeof mermaidValidator>;
+
+      const isValidatorResult = (
+        result: TypedToolResult<Tools>
+      ): result is TypedToolResult<Tools> & {
+        toolName: 'mermaidValidator';
+        dynamic?: false | undefined;
+        output: ValidatorOutput;
+      } => result.toolName === 'mermaidValidator' && result.dynamic !== true;
+
       const result = streamText({
         model: openai('gpt-4o-mini'),
         messages: convertToModelMessages(messages),
-        tools: { mermaidValidator },
+        tools,
         stopWhen: [
           stepCountIs(6),
           ({ steps }) => {
             const lastStep = steps[steps.length - 1];
-            return (lastStep?.toolResults || []).some((tr) => {
-              const output = tr.output as { validated?: boolean };
-              return output?.validated === true;
-            });
+            if (!lastStep) return false;
+            return lastStep.toolResults.some(
+              (toolResult) =>
+                isValidatorResult(toolResult) &&
+                toolResult.output.validated === true
+            );
           },
         ],
         onError: ({ error }) => {
@@ -229,21 +249,44 @@ Stream short status updates for each step. When validated: true is returned, do 
       },
     });
 
+    const tools = { mermaidValidator };
+    type Tools = typeof tools;
+    type ValidatorInput = InferToolInput<typeof mermaidValidator>;
+    type ValidatorOutput = InferToolOutput<typeof mermaidValidator>;
+
+    const isValidatorCall = (
+      call: TypedToolCall<Tools>
+    ): call is TypedToolCall<Tools> & {
+      toolName: 'mermaidValidator';
+      dynamic?: false | undefined;
+      input: ValidatorInput;
+    } => call.toolName === 'mermaidValidator' && call.dynamic !== true;
+
+    const isValidatorResult = (
+      result: TypedToolResult<Tools>
+    ): result is TypedToolResult<Tools> & {
+      toolName: 'mermaidValidator';
+      dynamic?: false | undefined;
+      output: ValidatorOutput;
+    } => result.toolName === 'mermaidValidator' && result.dynamic !== true;
+
     // AI SDK v5 Multi-step approach: allow the model to iterate with validation feedback
     console.log('🔄 Starting AI-powered iterative fixing with up to 6 steps');
     const result = await streamText({
       model: openai('gpt-4o-mini'),
-      tools: { mermaidValidator },
+      tools,
       // Modern AI SDK v5 stopWhen with proper helper function
       stopWhen: [
         stepCountIs(6), // Stop after 6 steps max
         ({ steps }) => {
           // Stop if any tool result in last step is validated
           const lastStep = steps[steps.length - 1];
-          return (lastStep?.toolResults || []).some((tr) => {
-            const output = tr.output as { validated?: boolean };
-            return output?.validated === true;
-          });
+          if (!lastStep) return false;
+          return lastStep.toolResults.some(
+            (toolResult) =>
+              isValidatorResult(toolResult) &&
+              toolResult.output.validated === true
+          );
         },
       ],
       // Modern error handling with onError callback
@@ -251,7 +294,7 @@ Stream short status updates for each step. When validated: true is returned, do 
         console.error('AI SDK Error during Mermaid fixing:', error);
       },
       // Lifecycle callback for completion
-      onFinish: ({ text, totalUsage, steps }) => {
+      onFinish: ({ totalUsage, steps }) => {
         console.log(
           `🎯 Multi-step process completed in ${steps.length} AI steps. Usage:`,
           totalUsage
@@ -293,7 +336,7 @@ ${actualError}
       result.finishReason,
     ]);
 
-    const [finalText, steps, totalUsage, finishReason] = finalResult;
+    const [, steps, totalUsage, finishReason] = finalResult;
 
     // AI SDK v5 Feature: Streaming response option for future frontend support
     if (stream) {
@@ -315,28 +358,20 @@ ${actualError}
     // Pair toolCalls with toolResults to recover the candidate fixedCode from input args
     const attempts: Attempt[] = [];
     for (const step of steps) {
-      const calls = step.toolCalls || [];
-      const results = step.toolResults || [];
+      const calls = step.toolCalls;
+      const results = step.toolResults;
       const count = Math.max(calls.length, results.length);
       for (let i = 0; i < count; i++) {
-        const call = calls[i] as any;
-        const result = results[i] as any;
-        const output = (result?.output || {}) as {
-          validated?: boolean;
-          validationError?: string;
-        };
-        const args = (call?.args || {}) as {
-          fixedCode?: string;
-          explanation?: string;
-        };
-        // Only include entries that look like our validator tool interactions
-        const toolName = call?.toolName || call?.name;
-        if (!toolName || toolName !== 'mermaidValidator') continue;
+        const call = calls[i];
+        const result = results[i];
+        if (!call || !result) continue;
+        if (!isValidatorCall(call) || !isValidatorResult(result)) continue;
+
         attempts.push({
-          fixedCode: args?.fixedCode,
-          validated: output?.validated,
-          validationError: output?.validationError,
-          explanation: args?.explanation,
+          fixedCode: call.input.fixedCode,
+          validated: result.output.validated,
+          validationError: result.output.validationError,
+          explanation: call.input.explanation,
         });
       }
     }
@@ -446,7 +481,7 @@ ${actualError}
   }
 }
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     if (!process.env.OPENAI_API_KEY) {
       return new Response(

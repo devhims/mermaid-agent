@@ -2,20 +2,272 @@ import { NextRequest } from 'next/server';
 
 export const runtime = 'nodejs';
 
-// Helper function to simulate tool execution
-const executeTool = async (toolName: string, args: any) => {
+type MermaidValidatorArgs = { code: string };
+type StructuredOutput = { fixedCode: string; explanation: string };
+type Attempt = {
+  fixedCode?: string;
+  validated?: boolean;
+  validationError?: string | null;
+  explanation?: string;
+};
+type ToolCallRecord = {
+  id: string;
+  function: {
+    name: string;
+    arguments?: string;
+  };
+};
+type ToolResultRecord = {
+  tool_call_id: string;
+  content: unknown;
+};
+type ProcessedResponsesData = {
+  content: string;
+  structuredOutput: StructuredOutput | null;
+  toolCalls: ToolCallRecord[];
+  toolResults: ToolResultRecord[];
+  attempts: Attempt[];
+  finalResult: Attempt | null;
+  isComplete: boolean;
+};
+
+type ValidationToolResult = {
+  type: 'validation';
+  isValid: boolean;
+  error: string | null;
+  message: string;
+};
+type ErrorToolResult = {
+  type: 'error';
+  error: string;
+};
+type ToolExecutionResult = ValidationToolResult | ErrorToolResult;
+
+type OutputTextContent = { type: 'output_text'; text: string };
+type FunctionCallContent = {
+  type: 'function_call';
+  call_id?: string;
+  name: string;
+  arguments?: string;
+};
+type FunctionCallOutput = {
+  type: 'function_call_output';
+  call_id?: string;
+  output?: unknown;
+};
+type ResponseMessageItem = {
+  type: 'message';
+  role: string;
+  content?: unknown;
+};
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const isMermaidValidatorArgs = (
+  value: unknown
+): value is MermaidValidatorArgs =>
+  isObject(value) && typeof value.code === 'string';
+
+const isStructuredOutput = (value: unknown): value is StructuredOutput =>
+  isObject(value) &&
+  typeof value.fixedCode === 'string' &&
+  typeof value.explanation === 'string';
+
+const isOutputTextContent = (
+  value: unknown
+): value is OutputTextContent =>
+  isObject(value) &&
+  value.type === 'output_text' &&
+  typeof value.text === 'string';
+
+const isFunctionCallContent = (
+  value: unknown
+): value is FunctionCallContent =>
+  isObject(value) &&
+  value.type === 'function_call' &&
+  typeof value.name === 'string';
+
+const isFunctionCallOutput = (
+  value: unknown
+): value is FunctionCallOutput =>
+  isObject(value) && value.type === 'function_call_output';
+
+const isResponseMessageItem = (
+  value: unknown
+): value is ResponseMessageItem =>
+  isObject(value) &&
+  value.type === 'message' &&
+  typeof value.role === 'string';
+
+const safeParseJson = (value: string): unknown => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const createToolCallRecord = (
+  content: FunctionCallContent,
+  fallbackIndex: number
+): ToolCallRecord => ({
+  id: content.call_id ?? `call-${fallbackIndex}`,
+  function: {
+    name: content.name,
+    arguments: content.arguments,
+  },
+});
+
+const executeTool = async (
+  toolName: string,
+  args: unknown
+): Promise<ToolExecutionResult> => {
   if (toolName === 'mermaid_validator') {
+    if (!isMermaidValidatorArgs(args)) {
+      return { type: 'error', error: 'Invalid arguments for mermaid_validator' };
+    }
+
     const { validateMermaidCode } = await import('../tools');
     const validation = await validateMermaidCode(args.code);
+    const errorMessage = validation.error ?? null;
     return {
+      type: 'validation',
       isValid: validation.isValid,
-      error: validation.error,
+      error: errorMessage,
       message: validation.isValid
         ? 'Mermaid code is valid'
-        : `Mermaid validation failed: ${validation.error}`,
+        : `Mermaid validation failed: ${errorMessage ?? 'unknown error'}`,
     };
   }
-  return { error: `Unknown tool: ${toolName}` };
+
+  return { type: 'error', error: `Unknown tool: ${toolName}` };
+};
+
+const executeToolCall = async (
+  toolCall: ToolCallRecord
+): Promise<{ result: ToolExecutionResult; attempt: Attempt | null }> => {
+  const parsedArgs =
+    typeof toolCall.function.arguments === 'string'
+      ? safeParseJson(toolCall.function.arguments)
+      : null;
+
+  const validatorArgs = isMermaidValidatorArgs(parsedArgs)
+    ? parsedArgs
+    : null;
+
+  const result = await executeTool(
+    toolCall.function.name,
+    validatorArgs ?? parsedArgs
+  );
+
+  if (result.type === 'validation' && validatorArgs) {
+    const attempt: Attempt = {
+      fixedCode: validatorArgs.code,
+      validated: result.isValid,
+      validationError: result.error,
+      explanation: result.isValid
+        ? 'Validation passed'
+        : `Validation failed: ${result.error ?? 'Unknown error'}`,
+    };
+    return { result, attempt };
+  }
+
+  return { result, attempt: null };
+};
+
+const getNestedString = (value: unknown, path: string[]): string | null => {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!isObject(current)) return null;
+    current = current[key];
+  }
+  return typeof current === 'string' ? current : null;
+};
+
+const processResponsesApiData = async (
+  data: unknown
+): Promise<ProcessedResponsesData> => {
+  let content = '';
+  let structuredOutput: StructuredOutput | null = null;
+  const toolCalls: ToolCallRecord[] = [];
+  const toolResults: ToolResultRecord[] = [];
+  const attempts: Attempt[] = [];
+
+  if (isObject(data) && Array.isArray(data.output)) {
+    for (const rawItem of data.output as unknown[]) {
+      if (isResponseMessageItem(rawItem) && rawItem.role === 'assistant') {
+        const contentItems = Array.isArray(rawItem.content)
+          ? (rawItem.content as unknown[])
+          : [];
+
+        for (const item of contentItems) {
+          if (isOutputTextContent(item)) {
+            content += item.text;
+
+            let jsonText = item.text.trim();
+            if (jsonText.startsWith('```json') && jsonText.endsWith('```')) {
+              jsonText = jsonText.slice(7, -3).trim();
+            } else if (
+              jsonText.startsWith('```') &&
+              jsonText.endsWith('```')
+            ) {
+              jsonText = jsonText.slice(3, -3).trim();
+            }
+
+            const parsed = safeParseJson(jsonText);
+            if (isStructuredOutput(parsed)) {
+              structuredOutput = parsed;
+            }
+          } else if (isFunctionCallContent(item)) {
+            const toolCall = createToolCallRecord(item, toolCalls.length + 1);
+            toolCalls.push(toolCall);
+            const { result, attempt } = await executeToolCall(toolCall);
+            if (attempt) attempts.push(attempt);
+            toolResults.push({
+              tool_call_id: toolCall.id,
+              content: result,
+            });
+          }
+        }
+      } else if (isFunctionCallContent(rawItem)) {
+        const toolCall = createToolCallRecord(rawItem, toolCalls.length + 1);
+        toolCalls.push(toolCall);
+        const { result, attempt } = await executeToolCall(toolCall);
+        if (attempt) attempts.push(attempt);
+        toolResults.push({
+          tool_call_id: toolCall.id,
+          content: result,
+        });
+      } else if (isFunctionCallOutput(rawItem)) {
+        toolResults.push({
+          tool_call_id: rawItem.call_id ?? `call-${toolResults.length + 1}`,
+          content: rawItem.output,
+        });
+      }
+    }
+  }
+
+  if (!content) {
+    content =
+      getNestedString(data, ['result', 'response']) ??
+      getNestedString(data, ['response']) ??
+      '';
+  }
+
+  const successfulAttempt = attempts.find((attempt) => attempt.validated);
+  const fallbackAttempt = attempts.length > 0 ? attempts[attempts.length - 1] : null;
+  const finalResult = successfulAttempt ?? fallbackAttempt ?? null;
+
+  return {
+    content,
+    structuredOutput,
+    toolCalls,
+    toolResults,
+    attempts,
+    finalResult,
+    isComplete: Boolean(finalResult?.validated),
+  };
 };
 
 // Test GPT-OSS using Cloudflare Responses API directly
@@ -123,179 +375,22 @@ Note: GPT-OSS models on Cloudflare Workers AI do not currently support structure
     }
 
     const data = await response.json();
-
-    // Extract the response content, tool calls, and structured output from the Responses API format
-    let content = '';
-    let toolCalls = [];
-    let toolResults = [];
-    let attempts = [];
-    let structuredOutput = null;
-
-    if (data.output && Array.isArray(data.output)) {
-      // Process each output item
-      for (const item of data.output) {
-        if (item.type === 'message' && item.role === 'assistant') {
-          // Extract text content
-          if (item.content && Array.isArray(item.content)) {
-            const textContent = item.content.find(
-              (c: any) => c.type === 'output_text'
-            );
-            if (textContent?.text) {
-              content += textContent.text;
-
-              // Try to parse as JSON for structured output
-              // Handle both direct JSON and markdown-wrapped JSON
-              let jsonText = textContent.text.trim();
-
-              // Remove markdown code blocks if present
-              if (jsonText.startsWith('```json') && jsonText.endsWith('```')) {
-                jsonText = jsonText.slice(7, -3).trim();
-              } else if (
-                jsonText.startsWith('```') &&
-                jsonText.endsWith('```')
-              ) {
-                jsonText = jsonText.slice(3, -3).trim();
-              }
-
-              try {
-                const parsed = JSON.parse(jsonText);
-                if (parsed.fixedCode && parsed.explanation) {
-                  structuredOutput = parsed;
-                }
-              } catch (e) {
-                // Not JSON, use as plain text
-              }
-            }
-
-            // Extract function calls
-            const functionCallContent = item.content.find(
-              (c: any) => c.type === 'function_call'
-            );
-            if (functionCallContent) {
-              const toolCall = {
-                id: functionCallContent.call_id,
-                function: {
-                  name: functionCallContent.name,
-                  arguments: functionCallContent.arguments,
-                },
-              };
-              toolCalls.push(toolCall);
-
-              // Execute the tool and add result
-              try {
-                let args = {};
-                if (toolCall.function.arguments) {
-                  args = JSON.parse(toolCall.function.arguments);
-                }
-                const result = await executeTool(toolCall.function.name, args);
-
-                // Track attempts for agent-like behavior
-                if (result.isValid !== undefined) {
-                  attempts.push({
-                    fixedCode: (args as any).code,
-                    validated: result.isValid,
-                    validationError: result.error,
-                    explanation: result.isValid
-                      ? 'Validation passed'
-                      : `Validation failed: ${result.error}`,
-                  });
-                }
-
-                toolResults.push({
-                  tool_call_id: toolCall.id,
-                  content: result,
-                });
-              } catch (error) {
-                toolResults.push({
-                  tool_call_id: toolCall.id,
-                  content: { error: 'Tool execution failed' },
-                });
-              }
-            }
-          }
-        } else if (item.type === 'function_call') {
-          // Direct function call in output array
-          const toolCall = {
-            id: item.call_id,
-            function: {
-              name: item.name,
-              arguments: item.arguments,
-            },
-          };
-          toolCalls.push(toolCall);
-
-          // Execute the tool and add result
-          try {
-            let args = {};
-            if (toolCall.function.arguments) {
-              args = JSON.parse(toolCall.function.arguments);
-            }
-            const result = await executeTool(toolCall.function.name, args);
-
-            // Track attempts for agent-like behavior
-            if (result.isValid !== undefined) {
-              attempts.push({
-                fixedCode: (args as any).code,
-                validated: result.isValid,
-                validationError: result.error,
-                explanation: result.isValid
-                  ? 'Validation passed'
-                  : `Validation failed: ${result.error}`,
-              });
-            }
-
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              content: result,
-            });
-          } catch (error) {
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              content: { error: 'Tool execution failed' },
-            });
-          }
-        } else if (item.type === 'function_call_output') {
-          // Extract function results
-          toolResults.push({
-            tool_call_id: item.call_id,
-            content: item.output,
-          });
-        }
-      }
-    }
-
-    // Fallback to other possible locations
-    if (!content) {
-      content = data.result?.response || data.response || '';
-    }
-
-    // Determine the final result from attempts
-    let finalResult = null;
-    if (attempts.length > 0) {
-      // Find the first successful validation or the last attempt
-      const successfulAttempt = attempts.find((attempt) => attempt.validated);
-      if (successfulAttempt) {
-        finalResult = successfulAttempt;
-      } else {
-        // Use the last attempt as the final result
-        finalResult = attempts[attempts.length - 1];
-      }
-    }
+    const processed = await processResponsesApiData(data);
 
     return new Response(
       JSON.stringify({
         success: true,
         model: '@cf/openai/gpt-oss-20b',
-        response: content,
-        structuredOutput,
-        hasStructuredOutput: structuredOutput !== null,
-        toolCalls,
-        toolResults,
-        attempts,
-        hasToolCalls: toolCalls.length > 0,
-        hasAttempts: attempts.length > 0,
-        finalResult,
-        isComplete: finalResult?.validated || false,
+        response: processed.content,
+        structuredOutput: processed.structuredOutput,
+        hasStructuredOutput: processed.structuredOutput !== null,
+        toolCalls: processed.toolCalls,
+        toolResults: processed.toolResults,
+        attempts: processed.attempts,
+        hasToolCalls: processed.toolCalls.length > 0,
+        hasAttempts: processed.attempts.length > 0,
+        finalResult: processed.finalResult,
+        isComplete: processed.isComplete,
         api: 'responses-api',
         rawResponse: data,
       }),
@@ -428,179 +523,22 @@ Note: GPT-OSS models on Cloudflare Workers AI do not currently support structure
     }
 
     const data = await response.json();
-
-    // Extract the response content, tool calls, and structured output from the Responses API format
-    let content = '';
-    let toolCalls = [];
-    let toolResults = [];
-    let attempts = [];
-    let structuredOutput = null;
-
-    if (data.output && Array.isArray(data.output)) {
-      // Process each output item
-      for (const item of data.output) {
-        if (item.type === 'message' && item.role === 'assistant') {
-          // Extract text content
-          if (item.content && Array.isArray(item.content)) {
-            const textContent = item.content.find(
-              (c: any) => c.type === 'output_text'
-            );
-            if (textContent?.text) {
-              content += textContent.text;
-
-              // Try to parse as JSON for structured output
-              // Handle both direct JSON and markdown-wrapped JSON
-              let jsonText = textContent.text.trim();
-
-              // Remove markdown code blocks if present
-              if (jsonText.startsWith('```json') && jsonText.endsWith('```')) {
-                jsonText = jsonText.slice(7, -3).trim();
-              } else if (
-                jsonText.startsWith('```') &&
-                jsonText.endsWith('```')
-              ) {
-                jsonText = jsonText.slice(3, -3).trim();
-              }
-
-              try {
-                const parsed = JSON.parse(jsonText);
-                if (parsed.fixedCode && parsed.explanation) {
-                  structuredOutput = parsed;
-                }
-              } catch (e) {
-                // Not JSON, use as plain text
-              }
-            }
-
-            // Extract function calls
-            const functionCallContent = item.content.find(
-              (c: any) => c.type === 'function_call'
-            );
-            if (functionCallContent) {
-              const toolCall = {
-                id: functionCallContent.call_id,
-                function: {
-                  name: functionCallContent.name,
-                  arguments: functionCallContent.arguments,
-                },
-              };
-              toolCalls.push(toolCall);
-
-              // Execute the tool and add result
-              try {
-                let args = {};
-                if (toolCall.function.arguments) {
-                  args = JSON.parse(toolCall.function.arguments);
-                }
-                const result = await executeTool(toolCall.function.name, args);
-
-                // Track attempts for agent-like behavior
-                if (result.isValid !== undefined) {
-                  attempts.push({
-                    fixedCode: (args as any).code,
-                    validated: result.isValid,
-                    validationError: result.error,
-                    explanation: result.isValid
-                      ? 'Validation passed'
-                      : `Validation failed: ${result.error}`,
-                  });
-                }
-
-                toolResults.push({
-                  tool_call_id: toolCall.id,
-                  content: result,
-                });
-              } catch (error) {
-                toolResults.push({
-                  tool_call_id: toolCall.id,
-                  content: { error: 'Tool execution failed' },
-                });
-              }
-            }
-          }
-        } else if (item.type === 'function_call') {
-          // Direct function call in output array
-          const toolCall = {
-            id: item.call_id,
-            function: {
-              name: item.name,
-              arguments: item.arguments,
-            },
-          };
-          toolCalls.push(toolCall);
-
-          // Execute the tool and add result
-          try {
-            let args = {};
-            if (toolCall.function.arguments) {
-              args = JSON.parse(toolCall.function.arguments);
-            }
-            const result = await executeTool(toolCall.function.name, args);
-
-            // Track attempts for agent-like behavior
-            if (result.isValid !== undefined) {
-              attempts.push({
-                fixedCode: (args as any).code,
-                validated: result.isValid,
-                validationError: result.error,
-                explanation: result.isValid
-                  ? 'Validation passed'
-                  : `Validation failed: ${result.error}`,
-              });
-            }
-
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              content: result,
-            });
-          } catch (error) {
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              content: { error: 'Tool execution failed' },
-            });
-          }
-        } else if (item.type === 'function_call_output') {
-          // Extract function results
-          toolResults.push({
-            tool_call_id: item.call_id,
-            content: item.output,
-          });
-        }
-      }
-    }
-
-    // Fallback to other possible locations
-    if (!content) {
-      content = data.result?.response || data.response || '';
-    }
-
-    // Determine the final result from attempts
-    let finalResult = null;
-    if (attempts.length > 0) {
-      // Find the first successful validation or the last attempt
-      const successfulAttempt = attempts.find((attempt) => attempt.validated);
-      if (successfulAttempt) {
-        finalResult = successfulAttempt;
-      } else {
-        // Use the last attempt as the final result
-        finalResult = attempts[attempts.length - 1];
-      }
-    }
+    const processed = await processResponsesApiData(data);
 
     return new Response(
       JSON.stringify({
         success: true,
         model: '@cf/openai/gpt-oss-20b',
-        response: content,
-        structuredOutput,
-        hasStructuredOutput: structuredOutput !== null,
-        toolCalls,
-        toolResults,
-        attempts,
-        hasToolCalls: toolCalls.length > 0,
-        hasAttempts: attempts.length > 0,
-        finalResult,
-        isComplete: finalResult?.validated || false,
+        response: processed.content,
+        structuredOutput: processed.structuredOutput,
+        hasStructuredOutput: processed.structuredOutput !== null,
+        toolCalls: processed.toolCalls,
+        toolResults: processed.toolResults,
+        attempts: processed.attempts,
+        hasToolCalls: processed.toolCalls.length > 0,
+        hasAttempts: processed.attempts.length > 0,
+        finalResult: processed.finalResult,
+        isComplete: processed.isComplete,
         api: 'responses-api',
         rawResponse: data,
       }),

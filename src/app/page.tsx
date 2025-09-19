@@ -38,6 +38,52 @@ type AgentStatus = {
   toolName?: string;
 };
 
+type ToolCallStreamEvent = Record<string, unknown> & {
+  type: 'tool-call';
+  toolName?: string;
+  args?: unknown;
+  input?: unknown;
+};
+
+type ToolResultStreamEvent = Record<string, unknown> & {
+  type: 'tool-result';
+  toolName?: string;
+  result?: unknown;
+  output?: unknown;
+};
+
+type TextDeltaStreamEvent = Record<string, unknown> & {
+  type: 'text-delta';
+  accumulatedText?: unknown;
+};
+
+type FinishStreamEvent = Record<string, unknown> & {
+  type: 'finish';
+  usage?: unknown;
+  totalUsage?: unknown;
+  finishReason?: unknown;
+};
+
+type ErrorStreamEvent = Record<string, unknown> & {
+  type: 'error';
+  error?: unknown;
+};
+
+type GenericStreamEvent = Record<string, unknown> & {
+  type: string;
+};
+
+type StreamingEvent =
+  | ToolCallStreamEvent
+  | ToolResultStreamEvent
+  | TextDeltaStreamEvent
+  | FinishStreamEvent
+  | ErrorStreamEvent
+  | GenericStreamEvent;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
 type AgentStreamState = {
   steps: { action: string; details: string }[];
   message?: string;
@@ -52,6 +98,7 @@ type AgentResultState = {
   message: string;
   finalCode?: string;
   stepsUsed?: number;
+  toolCallCount?: number;
   steps?: { action: string; details: string }[];
 };
 
@@ -266,29 +313,14 @@ export default function Home() {
       zoomPanRef.current.resetTransform();
     }
   }
-  function fitToView() {
-    if (zoomPanRef.current) {
-      const svg = getSvgElement();
-      const container = containerRef.current;
-      if (!svg || !container) return;
-      const bbox = svg.getBBox();
-      const pad = 16;
-      const cw = container.clientWidth - pad * 2;
-      const ch = container.clientHeight - pad * 2;
-      const scale = Math.max(0.1, Math.min(cw / bbox.width, ch / bbox.height));
-      zoomPanRef.current.setTransform(
-        pad - bbox.x * scale,
-        pad - bbox.y * scale,
-        scale
-      );
-    }
-  }
 
   async function handleFixWithAgent() {
     if (agentStreamingState.isStreaming) return;
 
     let runId: number | null = null;
     let steps: { action: string; details: string }[] = [];
+    let remoteToolCallCount: number | undefined;
+    let remoteStepCount: number | undefined;
     let message = '';
     let finalCode: string | undefined;
     let validated: boolean | undefined;
@@ -381,9 +413,9 @@ export default function Home() {
         for (const raw of lines) {
           if (!raw.trim()) continue;
 
-          let event: any;
+          let parsedEvent: unknown;
           try {
-            event = JSON.parse(raw);
+            parsedEvent = JSON.parse(raw);
           } catch (parseError) {
             console.error(
               'Error parsing streaming event:',
@@ -394,62 +426,91 @@ export default function Home() {
             continue;
           }
 
+          if (!isRecord(parsedEvent)) {
+            console.warn('Skipping non-object streaming payload:', parsedEvent);
+            continue;
+          }
+
+          const event = parsedEvent as StreamingEvent;
+
           if (isStale()) return;
 
           if (event.type === 'tool-call') {
+            const toolCallEvent = event as ToolCallStreamEvent;
+            const toolName =
+              typeof toolCallEvent.toolName === 'string'
+                ? toolCallEvent.toolName
+                : 'Unknown tool';
+
             const detail = JSON.stringify(
-              event.args ?? event.input ?? {},
+              toolCallEvent.args ?? toolCallEvent.input ?? {},
               null,
               2
             );
             steps = [
               ...steps,
               {
-                action: `Tool call — ${event.toolName}`,
+                action: `Tool call — ${toolName}`,
                 details: detail,
               },
             ];
             status = {
-              label: `Running ${event.toolName}`,
+              label: `Running ${toolName}`,
               detail: 'Validating proposed fix…',
               tone: 'progress',
-              toolName: event.toolName,
+              toolName,
             };
             emitStreamUpdate();
           } else if (event.type === 'tool-result') {
-            const result = event.result ?? event.output ?? {};
-            const detail = JSON.stringify(result, null, 2);
+            const toolResultEvent = event as ToolResultStreamEvent;
+            const toolName =
+              typeof toolResultEvent.toolName === 'string'
+                ? toolResultEvent.toolName
+                : 'Unknown tool';
+
+            const resultData =
+              toolResultEvent.result ?? toolResultEvent.output ?? {};
+            const resultRecord = isRecord(resultData) ? resultData : {};
+            const detail = JSON.stringify(resultRecord, null, 2);
             steps = [
               ...steps,
               {
-                action: `Tool result — ${event.toolName}`,
+                action: `Tool result — ${toolName}`,
                 details: detail,
               },
             ];
 
-            if (typeof result.fixedCode === 'string') {
-              candidateFromTool = result.fixedCode;
-            }
-            if (typeof result.validated === 'boolean') {
-              validated = result.validated;
+            const fixedCode = resultRecord['fixedCode'];
+            if (typeof fixedCode === 'string') {
+              candidateFromTool = fixedCode;
             }
 
-            const validationError = result.validationError as
-              | string
-              | undefined;
-            status = result.validated
+            const validatedValue = resultRecord['validated'];
+            if (typeof validatedValue === 'boolean') {
+              validated = validatedValue;
+            }
+
+            const validationErrorValue = resultRecord['validationError'];
+            const validationError =
+              typeof validationErrorValue === 'string'
+                ? validationErrorValue
+                : undefined;
+
+            const isValidated =
+              typeof validatedValue === 'boolean' ? validatedValue : false;
+
+            status = isValidated
               ? {
                   label: 'Validation passed',
-                  detail: `${event.toolName} confirmed the fix.`,
-                  tone: 'success',
-                  toolName: event.toolName,
+                  detail: `${toolName} confirmed the fix.`,
+                  tone: 'progress',
+                  toolName,
                 }
               : {
                   label: 'Validation failed',
-                  detail:
-                    validationError ?? `${event.toolName} reported an issue.`,
+                  detail: validationError ?? `${toolName} reported an issue.`,
                   tone: 'error',
-                  toolName: event.toolName,
+                  toolName,
                 };
             emitStreamUpdate();
           } else if (event.type === 'text-delta') {
@@ -477,19 +538,25 @@ export default function Home() {
             };
             emitStreamUpdate();
           } else if (event.type === 'finish') {
-            usage = (event.usage ?? event.totalUsage) as AgentUsage | undefined;
+            const finishEvent = event as FinishStreamEvent;
+            const usageCandidate = finishEvent.usage ?? finishEvent.totalUsage;
+            usage = isRecord(usageCandidate)
+              ? (usageCandidate as AgentUsage)
+              : usage;
             status = {
               label: 'Finalizing…',
-              detail: event.finishReason
-                ? `Finish reason: ${event.finishReason}`
-                : undefined,
+              detail:
+                typeof finishEvent.finishReason === 'string'
+                  ? `Finish reason: ${finishEvent.finishReason}`
+                  : undefined,
               tone: validated === false ? 'error' : 'progress',
             };
             emitStreamUpdate();
           } else if (event.type === 'error') {
+            const errorEvent = event as ErrorStreamEvent;
             const detail =
-              typeof event.error === 'string'
-                ? event.error
+              typeof errorEvent.error === 'string'
+                ? errorEvent.error
                 : 'Agent reported an error.';
             message = detail;
             status = {
@@ -499,25 +566,73 @@ export default function Home() {
             };
             emitStreamUpdate();
           } else if (typeof event.success === 'boolean') {
+            const successEvent = event as GenericStreamEvent & {
+              success: boolean;
+              fixedCode?: unknown;
+              isComplete?: unknown;
+              validated?: unknown;
+              usage?: unknown;
+              explanation?: unknown;
+              message?: unknown;
+              toolCallCount?: unknown;
+            };
+
             completed = true;
 
-            finalCode = event.fixedCode ?? candidateFromTool;
-            const isComplete = event.isComplete ?? false;
-            validated =
-              event.validated ??
-              (typeof validated === 'boolean' ? validated : isComplete);
-            usage = event.usage ?? usage;
+            const fixedCodeValue = successEvent.fixedCode;
+            finalCode =
+              typeof fixedCodeValue === 'string'
+                ? fixedCodeValue
+                : candidateFromTool;
 
+            const isComplete =
+              typeof successEvent.isComplete === 'boolean'
+                ? successEvent.isComplete
+                : false;
+
+            const validatedValue = successEvent.validated;
+            validated =
+              typeof validatedValue === 'boolean'
+                ? validatedValue
+                : typeof validated === 'boolean'
+                ? validated
+                : isComplete;
+
+            usage = isRecord(successEvent.usage)
+              ? (successEvent.usage as AgentUsage)
+              : usage;
+
+            if (typeof successEvent.toolCallCount === 'number') {
+              remoteToolCallCount = successEvent.toolCallCount;
+            }
+
+            const rawStepCount = successEvent['stepCount'];
+            const rawStepsCount = successEvent['stepsCount'];
+            const stepCountValue =
+              typeof rawStepCount === 'number'
+                ? rawStepCount
+                : typeof rawStepsCount === 'number'
+                  ? rawStepsCount
+                  : undefined;
+
+            if (stepCountValue !== undefined) {
+              remoteStepCount = stepCountValue;
+            }
+
+            const explanationValue = successEvent.explanation;
+            const messageValue = successEvent.message;
             const finalMessage =
-              (event.explanation as string | undefined) ??
-              (event.message as string | undefined) ??
+              (typeof explanationValue === 'string'
+                ? explanationValue
+                : undefined) ??
+              (typeof messageValue === 'string' ? messageValue : undefined) ??
               explanation ??
               (message || 'Fix completed');
 
             message = finalMessage;
             explanation = finalMessage;
 
-            status = event.success
+            status = successEvent.success
               ? {
                   label: validated ? 'Diagram fixed' : 'Agent completed',
                   detail: finalMessage,
@@ -536,10 +651,11 @@ export default function Home() {
             steps = [...steps, summaryStep];
 
             setAgentResult({
-              success: Boolean(event.success),
+              success: successEvent.success,
               message: finalMessage,
               finalCode,
-              stepsUsed: steps.length,
+              stepsUsed: remoteStepCount,
+              toolCallCount: remoteToolCallCount,
               steps,
             });
 
@@ -559,7 +675,53 @@ export default function Home() {
 
       if (isStale()) return;
       if (!completed) {
-        throw new Error('Streaming ended before final result was received');
+        const fallbackMessage =
+          explanation ||
+          message ||
+          'Agent finished without providing a structured summary. Review the transcript above for details.';
+
+        finalCode = finalCode ?? candidateFromTool;
+
+        status = {
+          label: finalCode ? 'Diagram fixed (fallback)' : 'Agent completed',
+          detail: fallbackMessage,
+          tone: finalCode ? 'progress' : 'error',
+        };
+
+        const summaryStep = {
+          action: 'Summary',
+          details: fallbackMessage,
+        };
+        steps = [...steps, summaryStep];
+
+        setAgentResult({
+          success: Boolean(finalCode),
+          message: fallbackMessage,
+          finalCode,
+          stepsUsed: remoteStepCount,
+          toolCallCount: remoteToolCallCount,
+          steps,
+        });
+
+        setAgentStream({
+          steps,
+          message: fallbackMessage,
+          finalCode,
+          validated,
+          usage,
+          status,
+        });
+
+        setAgentStreamingState((prev) => ({
+          ...prev,
+          isLoading: false,
+          isStreaming: false,
+          abortController: null,
+          runId: null,
+        }));
+        activeRunIdRef.current = null;
+        setAgentStatus(status);
+        return;
       }
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
@@ -585,7 +747,8 @@ export default function Home() {
       setAgentResult({
         success: false,
         message: msg,
-        stepsUsed: steps.length,
+        toolCallCount: remoteToolCallCount,
+        stepsUsed: remoteStepCount,
         steps,
       });
       setAgentStreamingState((prev) => ({
@@ -664,7 +827,6 @@ export default function Home() {
                   onCodeChange={setCode}
                   onReset={() => setCode(DEFAULT_CODE)}
                   onImport={onImportFile}
-                  onExport={exportMmd}
                   agentResult={agentResult}
                   agentStream={!hideAgentPanel ? agentStream : null}
                   onAcceptAgentResult={acceptAgentResult}
@@ -679,7 +841,7 @@ export default function Home() {
                   agentStatus={agentStatus}
                   diagramError={error}
                   isCollapsed={editorCollapsed}
-                  onToggleCollapse={() => setEditorCollapsed(!editorCollapsed)}
+                  onToggleCollapse={(open) => setEditorCollapsed(!open)}
                 />
               </div>
             </div>
@@ -699,10 +861,10 @@ export default function Home() {
               onZoomIn={zoomIn}
               onZoomOut={zoomOut}
               onResetView={resetView}
-              onFitToView={fitToView}
               zoomPanRef={zoomPanRef}
               selectedTheme={selectedMermaidTheme}
               onThemeChange={setSelectedMermaidTheme}
+              onExportCode={exportMmd}
             />
           </ResizablePanel>
         </ResizablePanelGroup>
