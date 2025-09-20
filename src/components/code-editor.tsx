@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Code, Copy, RotateCcw, Upload } from 'lucide-react';
+import { Code, Copy, RotateCcw, Upload, CheckCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
@@ -79,6 +79,7 @@ export function CodeEditor({
 }: CodeEditorProps) {
   const [isOpen, setIsOpen] = useState(!isCollapsed);
   const [stepsOpen, setStepsOpen] = useState(true);
+  const [copied, setCopied] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Sync internal state with external collapsed state
@@ -95,6 +96,16 @@ export function CodeEditor({
   const handleOpenChange = (open: boolean) => {
     setIsOpen(open);
     onToggleCollapse?.(open);
+  };
+
+  const handleCopyClick = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      console.error('Failed to copy:', error);
+    }
   };
 
   const handleImportClick = () => {
@@ -220,10 +231,14 @@ export function CodeEditor({
                   <Button
                     variant='outline'
                     size='sm'
-                    onClick={() => navigator.clipboard.writeText(code)}
+                    onClick={handleCopyClick}
                     className='text-xs cursor-pointer'
                   >
-                    <Copy className='h-3 w-3' />
+                    {copied ? (
+                      <CheckCheck className='h-3 w-3 text-white' />
+                    ) : (
+                      <Copy className='h-3 w-3' />
+                    )}
                   </Button>
                 </div>
               </div>
@@ -380,17 +395,21 @@ export function CodeEditor({
                         const successClasses =
                           'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/60 dark:bg-emerald-900/20 dark:text-emerald-200';
                         const className =
-                          step.type === 'tool-result' && step.validated === false
+                          step.type === 'tool-result' &&
+                          step.validated === false
                             ? `${baseClasses} ${failureClasses}`
-                            : step.type === 'tool-result' && step.validated === true
-                              ? `${baseClasses} ${successClasses}`
-                              : baseClasses;
+                            : step.type === 'tool-result' &&
+                              step.validated === true
+                            ? `${baseClasses} ${successClasses}`
+                            : baseClasses;
 
                         if (step.type === 'tool-call') {
                           return (
                             <div key={index} className={className}>
                               <div className='font-semibold'>Tool Called</div>
-                              <div className='text-muted-foreground'>{step.toolName}</div>
+                              <div className='text-muted-foreground'>
+                                {step.toolName}
+                              </div>
                             </div>
                           );
                         }
@@ -400,23 +419,29 @@ export function CodeEditor({
                             step.validated === true
                               ? 'Success'
                               : step.validated === false
-                                ? 'Failed'
-                                : 'Unknown';
+                              ? 'Failed'
+                              : 'Unknown';
                           const labelTone =
                             step.validated === true
                               ? 'text-emerald-600 dark:text-emerald-200'
                               : step.validated === false
-                                ? 'text-destructive'
-                                : 'text-muted-foreground';
+                              ? 'text-destructive'
+                              : 'text-muted-foreground';
                           return (
                             <div key={index} className={className}>
                               <div className='flex items-center justify-between gap-2'>
-                                <span className='font-semibold'>Tool Result</span>
-                                <span className={`text-[11px] font-medium ${labelTone}`}>
+                                <span className='font-semibold'>
+                                  Tool Result
+                                </span>
+                                <span
+                                  className={`text-[11px] font-medium ${labelTone}`}
+                                >
                                   {label}
                                 </span>
                               </div>
-                              <div className='text-muted-foreground'>{step.toolName}</div>
+                              <div className='text-muted-foreground'>
+                                {step.toolName}
+                              </div>
                             </div>
                           );
                         }

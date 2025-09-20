@@ -904,10 +904,13 @@ export default function Home() {
     >
       <div className='h-screen bg-background text-foreground flex flex-col'>
         {/* Header */}
-        <header className='flex items-center justify-between px-4 py-4 border-b bg-card/50 backdrop-blur-sm'>
-          <div className='flex items-center gap-3'>
+        <header className='flex items-center justify-between px-4 py-2 sm:px-4 sm:py-4 border-b bg-card/50 backdrop-blur-sm'>
+          <div className='flex flex-col sm:flex-row items-start sm:items-center gap-0 sm:gap-3'>
             <h1 className='text-xl font-bold tracking-tight'>Mermaid Agent</h1>
-            <Badge variant='outline' className='text-xs rounded-sm'>
+            <Badge
+              variant='outline'
+              className='text-xs rounded-sm border-primary/30 text-primary bg-primary/5'
+            >
               AI Powered Editor
             </Badge>
           </div>
