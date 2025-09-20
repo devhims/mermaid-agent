@@ -111,6 +111,35 @@ graph TD
   D --> E
 `;
 
+const normalizeExplanationValue = (
+  value: unknown
+): string | string[] | undefined => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
+  if (Array.isArray(value)) {
+    const cleaned = value
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    return cleaned.length > 0 ? cleaned : undefined;
+  }
+  return undefined;
+};
+
+const explanationToDisplay = (
+  value: string | string[] | undefined
+): string | undefined => {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    return value.map((line) => `• ${line}`).join('\n');
+  }
+  return undefined;
+};
+
 export default function Home() {
   const [code, setCode] = useState<string>(DEFAULT_CODE);
   const [error, setError] = useState<string | null>(null);
@@ -326,10 +355,20 @@ export default function Home() {
     let validated: boolean | undefined;
     let usage: AgentUsage | undefined;
     let status: AgentStatus | undefined;
-    let explanation: string | undefined;
+    let explanation: string | string[] | undefined;
     let candidateFromTool: string | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     let completed = false;
+
+    const applyExplanation = (value: unknown) => {
+      const normalized = normalizeExplanationValue(value);
+      if (!normalized) return;
+      explanation = normalized;
+      const display = explanationToDisplay(normalized);
+      if (display) {
+        message = display;
+      }
+    };
 
     try {
       setAgentResult(null);
@@ -520,21 +559,18 @@ export default function Home() {
             if (structuredEvent.output && isRecord(structuredEvent.output)) {
               const structuredOutput = structuredEvent.output;
               const fixed = structuredOutput['fixedCode'];
-              const explanationText = structuredOutput['explanation'];
+              const explanationValue = structuredOutput['explanation'];
 
               if (typeof fixed === 'string' && fixed.length > 0) {
                 candidateFromTool = fixed;
                 finalCode = fixed;
               }
 
-              if (typeof explanationText === 'string') {
-                explanation = explanationText;
-                message = explanationText;
-              }
+              applyExplanation(explanationValue);
 
               status = {
                 label: 'Synthesizing fix…',
-                detail: explanation,
+                detail: explanationToDisplay(explanation),
                 tone: 'progress',
               };
               emitStreamUpdate();
@@ -543,16 +579,18 @@ export default function Home() {
             if (typeof event.accumulatedText === 'string') {
               try {
                 const parsed = JSON.parse(event.accumulatedText);
-                if (
-                  typeof parsed.fixedCode === 'string' &&
-                  !agentStream?.finalCode
-                ) {
-                  candidateFromTool = parsed.fixedCode;
-                  finalCode = parsed.fixedCode;
-                }
-                if (typeof parsed.explanation === 'string') {
-                  explanation = parsed.explanation;
-                  message = parsed.explanation;
+                if (isRecord(parsed)) {
+                  const parsedFixed = parsed['fixedCode'];
+                  if (
+                    typeof parsedFixed === 'string' &&
+                    !agentStream?.finalCode
+                  ) {
+                    candidateFromTool = parsedFixed;
+                    finalCode = parsedFixed;
+                  }
+                  if ('explanation' in parsed) {
+                    applyExplanation(parsed['explanation']);
+                  }
                 }
               } catch {
                 if (!message) {
@@ -563,7 +601,7 @@ export default function Home() {
 
             status = {
               label: 'Drafting fix…',
-              detail: explanation,
+              detail: explanationToDisplay(explanation),
               tone: 'progress',
             };
             emitStreamUpdate();
@@ -650,22 +688,27 @@ export default function Home() {
             }
 
             const explanationValue = successEvent.explanation;
+            const normalizedSuccessExplanation =
+              normalizeExplanationValue(explanationValue);
+            if (normalizedSuccessExplanation) {
+              explanation = normalizedSuccessExplanation;
+            }
             const messageValue = successEvent.message;
             const finalMessage =
-              (typeof explanationValue === 'string'
-                ? explanationValue
-                : undefined) ??
+              explanationToDisplay(explanation) ??
               (typeof messageValue === 'string' ? messageValue : undefined) ??
-              explanation ??
               (message || 'Fix completed');
 
             message = finalMessage;
-            explanation = finalMessage;
+            if (!explanation && finalMessage) {
+              explanation = finalMessage;
+            }
 
             status = successEvent.success
               ? {
                   label: validated ? 'Diagram fixed' : 'Agent completed',
-                  detail: finalMessage,
+                  detail:
+                    explanationToDisplay(explanation) ?? finalMessage,
                   tone: validated ? 'success' : 'progress',
                 }
               : {
@@ -706,7 +749,7 @@ export default function Home() {
       if (isStale()) return;
       if (!completed) {
         const fallbackMessage =
-          explanation ||
+          explanationToDisplay(explanation) ||
           message ||
           'Agent finished without providing a structured summary. Review the transcript above for details.';
 

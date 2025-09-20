@@ -28,6 +28,8 @@ const RequestSchema = z.object({
   step: z.number().default(1),
 });
 
+const ExplanationSchema = z.union([z.string(), z.array(z.string())]);
+
 // Response schema - defines the shape returned by this API
 const ResponseSchema = z.object({
   success: z.boolean(),
@@ -35,7 +37,7 @@ const ResponseSchema = z.object({
   fixedCode: z.string().optional(),
   validated: z.boolean().optional(),
   validationError: z.string().optional(),
-  explanation: z.string().optional(),
+  explanation: ExplanationSchema.optional(),
   message: z.string().optional(),
   step: z.number().optional(),
   attempts: z
@@ -44,7 +46,7 @@ const ResponseSchema = z.object({
         fixedCode: z.string().optional(),
         validated: z.boolean().optional(),
         validationError: z.string().optional(),
-        explanation: z.string().optional(),
+        explanation: ExplanationSchema.optional(),
       })
     )
     .optional(),
@@ -132,7 +134,9 @@ export async function POST(req: NextRequest) {
     // Define the structured output schema for AI SDK v5 experimental_output
     const ObjectSchema = z.object({
       fixedCode: z.string().describe('Minimally changed Mermaid code proposal'),
-      explanation: z.string().describe('Short explanation of the changes'),
+      explanation: ExplanationSchema.describe(
+        'Explanation of the changes made to fix the diagram'
+      ),
     });
     type FixProposal = z.infer<typeof ObjectSchema>;
 
@@ -175,11 +179,109 @@ export async function POST(req: NextRequest) {
     const result = streamText({
       model: openai('gpt-4o-mini'),
       tools,
+      prepareStep({ messages }) {
+        // Compact the transcript before each turn so we only resend the
+        // freshest tool result while keeping relevant conversational context.
+        // console.log('🔍 Prepare step:', messages);
+
+        if (!Array.isArray(messages) || messages.length === 0) {
+          return { messages };
+        }
+
+        const isRecordMessage = (
+          msg: unknown
+        ): msg is Record<string, unknown> =>
+          typeof msg === 'object' && msg !== null;
+
+        // Helper to detect assistant messages that bundle tool-call metadata.
+        const hasToolCallContent = (msg: unknown) => {
+          if (!isRecordMessage(msg)) {
+            return false;
+          }
+
+          const content = msg.content;
+          if (!Array.isArray(content)) {
+            return false;
+          }
+
+          return content.some(
+            (item: unknown) =>
+              isRecordMessage(item) && item.type === 'tool-call'
+          );
+        };
+
+        const lastToolIndexFromEnd = [...messages]
+          .reverse()
+          .findIndex((msg) => isRecordMessage(msg) && msg.role === 'tool');
+
+        if (lastToolIndexFromEnd === -1) {
+          return { messages };
+        }
+
+        const absoluteLastToolIndex =
+          messages.length - 1 - lastToolIndexFromEnd;
+
+        // Find the assistant message that triggered the tool result we kept so
+        // we can prune older tool-call attempts while leaving other dialog.
+        const lastAssistantToolIndexFromEnd = [...messages]
+          .slice(0, absoluteLastToolIndex)
+          .reverse()
+          .findIndex((msg) => hasToolCallContent(msg));
+
+        const absoluteLastAssistantToolIndex =
+          lastAssistantToolIndexFromEnd === -1
+            ? -1
+            : absoluteLastToolIndex - 1 - lastAssistantToolIndexFromEnd;
+
+        const filteredMessages = messages.filter((msg, index) => {
+          if (!isRecordMessage(msg)) {
+            return true;
+          }
+
+          // Keep the most recent tool payload so the model can see the latest
+          // validator feedback; older tool outputs are dropped to save tokens
+          // and to avoid dangling tool-call references the API will reject.
+          if (msg.role === 'tool') {
+            return index === absoluteLastToolIndex;
+          }
+
+          if (
+            hasToolCallContent(msg) &&
+            index < absoluteLastAssistantToolIndex
+          ) {
+            return false;
+          }
+
+          return true;
+        });
+
+        console.log('🔍 Filtered messages:', filteredMessages);
+        return { messages: filteredMessages };
+      },
       experimental_output: Output.object({
         schema: ObjectSchema,
       }),
       stopWhen: stepCountIs(10), // max round trips with the LLM
-      system: `You fix Mermaid diagrams with minimal edits. Use the mermaidValidator tool to validate your fixes. Output a structured object with fixedCode and explanation.`,
+      system: `<role>
+You are a meticulous Mermaid diagram fixer for a code validation agent.
+</role>
+<objective>
+- Repair every parser error you encounter, including multiple simultaneous issues.
+- Preserve the original intent of the diagram with minimal, targeted edits.
+</objective>
+<tool_use>
+- Call mermaidValidator to check each candidate fix before returning the final answer; when validation fails, analyze the new error and adjust your fix.
+</tool_use>
+<workflow>
+- Keep iterating when new issues surface until the diagram validates or you conclude no further progress is achievable.
+- If you must stop without a valid diagram, clearly state what blocked you.
+</workflow>
+<output>
+- Return a structured object containing fixedCode and explanation.
+- Provide explanation as a concise Markdown bullet list where each bullet names a specific fix or remaining blocker.
+- Ensure every code change is represented by its own bullet; never combine multiple fixes into a single bullet. If nothing changed, state that explicitly.
+- Avoid redundant narration or status updates outside the required list.
+</output>`,
       prompt: `Fix this Mermaid diagram. Provide a minimal fix.
 
 Current Code:
@@ -188,9 +290,7 @@ ${code}
 \`\`\`
 
 Parser Error:
-${actualError}
-
-Use the mermaidValidator tool to validate your proposed fix before finalizing the output.`,
+${actualError}`,
       onError: ({ error }) => {
         console.error('AI SDK streamText error:', error);
       },
@@ -223,6 +323,8 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
                     for await (const partial of partialOutputIterator) {
                       if (partial && typeof partial === 'object') {
                         last = partial as FixProposal;
+
+                        //console.log('🔍 Partial output:', last);
 
                         const data =
                           JSON.stringify({
@@ -435,7 +537,7 @@ Use the mermaidValidator tool to validate your proposed fix before finalizing th
             fixedCode?: string;
             validated?: boolean;
             validationError?: string | null;
-            explanation?: string;
+            explanation?: string | string[];
           }>;
 
           if (obj) {
