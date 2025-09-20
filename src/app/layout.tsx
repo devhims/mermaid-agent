@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import { ThemeProvider } from 'next-themes';
+import { Analytics } from '@vercel/analytics/next';
 import './globals.css';
 
 const geistSans = Geist({
@@ -14,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Mermaid Viewer',
-  description: 'Paste, render, fix, and download Mermaid diagrams.',
+  title: 'Mermaid Agent',
+  description: 'Fix Mermaid diagrams with AI.',
 };
 
 export default function RootLayout({
@@ -35,6 +36,7 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           {children}
+          <Analytics />
         </ThemeProvider>
       </body>
     </html>

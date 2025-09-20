@@ -226,7 +226,7 @@ export function DiagramDownloadDialog({
                   <div className='font-medium'>
                     {VARIANT_CONFIG[variant].label}
                   </div>
-                  <div className='text-xs text-muted-foreground'>
+                  <div className='text-xs text-muted-foreground hidden sm:block'>
                     {VARIANT_CONFIG[variant].description}
                   </div>
                 </Button>

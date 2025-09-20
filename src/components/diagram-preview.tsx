@@ -21,6 +21,7 @@ import {
   type MermaidTheme,
 } from '@/lib/mermaid-utils';
 import { DiagramDownloadDialog } from '@/components/diagram-download-dialog';
+import { PanelLeftIcon } from 'lucide-react';
 
 interface DiagramPreviewProps {
   error: string | null;
@@ -36,6 +37,7 @@ interface DiagramPreviewProps {
   selectedTheme: MermaidTheme;
   onThemeChange: (theme: MermaidTheme) => void;
   onExportCode: () => void;
+  onToggleEditor?: () => void;
 }
 
 export function DiagramPreview({
@@ -52,6 +54,7 @@ export function DiagramPreview({
   selectedTheme,
   onThemeChange,
   onExportCode,
+  onToggleEditor,
 }: DiagramPreviewProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
@@ -122,6 +125,18 @@ export function DiagramPreview({
       {/* Toolbar */}
       <div className='absolute top-0 left-0 right-0 z-10 flex items-center justify-between p-4'>
         <div className='flex items-center gap-3'>
+          {onToggleEditor && (
+            <Button
+              variant='ghost'
+              size='icon'
+              onClick={onToggleEditor}
+              className='size-8 cursor-pointer'
+              aria-label='Toggle editor panel'
+              title='Toggle editor panel'
+            >
+              <PanelLeftIcon className='h-4 w-4' />
+            </Button>
+          )}
           {isRendering && (
             <span className='text-xs text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 px-2 py-1 rounded flex items-center gap-1'>
               <div className='w-2 h-2 border border-current border-t-transparent rounded-full animate-spin'></div>

@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 import { useTheme } from 'next-themes';
 import { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
+import type { ImperativePanelHandle } from 'react-resizable-panels';
 import { ThemeToggle } from '@/components/theme-toggle';
-import { CodeEditor } from '@/components/code-editor';
+import { CodeEditor, type AgentActivityStep } from '@/components/code-editor';
 import { DiagramPreview } from '@/components/diagram-preview';
 import {
   ResizableHandle,
@@ -13,7 +14,9 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Badge } from '@/components/ui/badge';
+import { SidebarProvider } from '@/components/ui/sidebar';
 import { useDebounced } from '@/hooks/useDebounced';
+import { useIsMobile } from '@/hooks/use-mobile';
 import {
   sanitizeMermaid,
   renderWithFallback,
@@ -24,6 +27,8 @@ import {
 } from '@/lib/mermaid-utils';
 import { exportSvgAsPng } from '@/lib/canvas-utils';
 import { importTextFile, exportTextFile } from '@/lib/file-utils';
+import { Github } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 type AgentUsage = {
   totalTokens?: number;
@@ -85,7 +90,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
 type AgentStreamState = {
-  steps: { action: string; details: string }[];
+  steps: AgentActivityStep[];
   message?: string;
   finalCode?: string;
   validated?: boolean;
@@ -99,7 +104,7 @@ type AgentResultState = {
   finalCode?: string;
   stepsUsed?: number;
   toolCallCount?: number;
-  steps?: { action: string; details: string }[];
+  steps?: AgentActivityStep[];
 };
 
 const DEFAULT_CODE = `%% Mermaid Viewer — sample
@@ -153,6 +158,8 @@ export default function Home() {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const zoomPanRef = useRef<ReactZoomPanPinchRef | null>(null);
+  const editorPanelRef = useRef<ImperativePanelHandle | null>(null);
+  const didInitMobileCollapseRef = useRef(false);
   const lastPointerRef = useRef<{ x: number; y: number; has: boolean }>({
     x: 0,
     y: 0,
@@ -162,6 +169,32 @@ export default function Home() {
   const activeRunIdRef = useRef<number | null>(null);
 
   const debouncedCode = useDebounced(code, 100);
+  const isMobile = useIsMobile();
+
+  // Collapse editor by default on mobile (run once after mobile is known)
+  useEffect(() => {
+    if (isMobile && !didInitMobileCollapseRef.current) {
+      setEditorCollapsed(true);
+      try {
+        editorPanelRef.current?.collapse();
+      } catch {}
+      didInitMobileCollapseRef.current = true;
+    }
+  }, [isMobile]);
+
+  const onSidebarOpenChange = (open: boolean) => {
+    setEditorCollapsed(!open);
+    const ref = editorPanelRef.current;
+    if (!ref) return;
+    try {
+      if (open) {
+        ref.expand();
+        ref.resize(isMobile ? 80 : 35);
+      } else {
+        ref.collapse();
+      }
+    } catch {}
+  };
 
   // Custom streaming implementation using JSON mode API
   const [agentStreamingState, setAgentStreamingState] = useState<{
@@ -347,7 +380,7 @@ export default function Home() {
     if (agentStreamingState.isStreaming) return;
 
     let runId: number | null = null;
-    let steps: { action: string; details: string }[] = [];
+    let steps: AgentActivityStep[] = [];
     let remoteToolCallCount: number | undefined;
     let remoteStepCount: number | undefined;
     let message = '';
@@ -480,17 +513,11 @@ export default function Home() {
               typeof toolCallEvent.toolName === 'string'
                 ? toolCallEvent.toolName
                 : 'Unknown tool';
-
-            const detail = JSON.stringify(
-              toolCallEvent.args ?? toolCallEvent.input ?? {},
-              null,
-              2
-            );
             steps = [
               ...steps,
               {
-                action: `Tool call — ${toolName}`,
-                details: detail,
+                type: 'tool-call',
+                toolName,
               },
             ];
             status = {
@@ -510,12 +537,15 @@ export default function Home() {
             const resultData =
               toolResultEvent.result ?? toolResultEvent.output ?? {};
             const resultRecord = isRecord(resultData) ? resultData : {};
-            const detail = JSON.stringify(resultRecord, null, 2);
             steps = [
               ...steps,
               {
-                action: `Tool result — ${toolName}`,
-                details: detail,
+                type: 'tool-result',
+                toolName,
+                validated:
+                  typeof resultRecord['validated'] === 'boolean'
+                    ? (resultRecord['validated'] as boolean)
+                    : null,
               },
             ];
 
@@ -680,8 +710,8 @@ export default function Home() {
               typeof rawStepCount === 'number'
                 ? rawStepCount
                 : typeof rawStepsCount === 'number'
-                  ? rawStepsCount
-                  : undefined;
+                ? rawStepsCount
+                : undefined;
 
             if (stepCountValue !== undefined) {
               remoteStepCount = stepCountValue;
@@ -707,8 +737,7 @@ export default function Home() {
             status = successEvent.success
               ? {
                   label: validated ? 'Diagram fixed' : 'Agent completed',
-                  detail:
-                    explanationToDisplay(explanation) ?? finalMessage,
+                  detail: explanationToDisplay(explanation) ?? finalMessage,
                   tone: validated ? 'success' : 'progress',
                 }
               : {
@@ -717,9 +746,9 @@ export default function Home() {
                   tone: 'error',
                 };
 
-            const summaryStep = {
-              action: 'Summary',
-              details: finalMessage,
+            const summaryStep: AgentActivityStep = {
+              type: 'summary',
+              message: finalMessage,
             };
             steps = [...steps, summaryStep];
 
@@ -761,9 +790,9 @@ export default function Home() {
           tone: finalCode ? 'progress' : 'error',
         };
 
-        const summaryStep = {
-          action: 'Summary',
-          details: fallbackMessage,
+        const summaryStep: AgentActivityStep = {
+          type: 'summary',
+          message: fallbackMessage,
         };
         steps = [...steps, summaryStep];
 
@@ -868,98 +897,141 @@ export default function Home() {
   }
 
   return (
-    <div className='h-screen bg-background text-foreground flex flex-col'>
-      {/* Header */}
-      <header className='flex items-center justify-between px-4 py-4 border-b bg-card/50 backdrop-blur-sm'>
-        <div className='flex items-center gap-4'>
-          <h1 className='text-xl font-bold tracking-tight'>Mermaid Agent</h1>
-          <Badge variant='outline' className='text-xs px-2 py-1 rounded-md'>
-            AI Powered Viewer
-          </Badge>
-        </div>
-
-        <ThemeToggle />
-      </header>
-
-      {/* Main Content */}
-      <div className='flex-1 overflow-hidden'>
-        <ResizablePanelGroup direction='horizontal' className='h-full'>
-          {/* Code Editor Panel */}
-          <ResizablePanel
-            defaultSize={editorCollapsed ? 0 : 35}
-            minSize={0}
-            maxSize={50}
-            className='min-w-0'
-            collapsible
-            collapsedSize={0}
-          >
-            <div className='h-full border-r bg-card/30'>
-              <div className='h-full p-4'>
-                <CodeEditor
-                  code={code}
-                  onCodeChange={setCode}
-                  onReset={() => setCode(DEFAULT_CODE)}
-                  onImport={onImportFile}
-                  agentResult={agentResult}
-                  agentStream={!hideAgentPanel ? agentStream : null}
-                  onAcceptAgentResult={acceptAgentResult}
-                  onDismissAgentResult={() => {
-                    setAgentResult(null);
-                    setHideAgentPanel(true);
-                  }}
-                  onStopAgent={stopAgentStreaming}
-                  agentLoading={agentLoading}
-                  agentStreaming={isStreaming}
-                  onFixWithAgent={handleFixWithAgent}
-                  agentStatus={agentStatus}
-                  diagramError={error}
-                  isCollapsed={editorCollapsed}
-                  onToggleCollapse={(open) => setEditorCollapsed(!open)}
-                />
-              </div>
-            </div>
-          </ResizablePanel>
-
-          <ResizableHandle withHandle />
-
-          {/* Preview Panel */}
-          <ResizablePanel defaultSize={editorCollapsed ? 100 : 70} minSize={50}>
-            <DiagramPreview
-              error={error}
-              containerRef={containerRef}
-              isRendering={isRendering}
-              onDownloadLight={() => downloadPng('light')}
-              onDownloadDark={() => downloadPng('dark')}
-              onDownloadTransparent={() => downloadPng('transparent')}
-              onZoomIn={zoomIn}
-              onZoomOut={zoomOut}
-              onResetView={resetView}
-              zoomPanRef={zoomPanRef}
-              selectedTheme={selectedMermaidTheme}
-              onThemeChange={setSelectedMermaidTheme}
-              onExportCode={exportMmd}
-            />
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      </div>
-
-      {/* Footer */}
-      <footer className='px-6 py-3 border-t bg-card/30 backdrop-blur-sm'>
-        <div className='flex items-center justify-between text-xs text-muted-foreground'>
-          <span>Built with Next.js, Mermaid, and GPT-4o</span>
-          <div className='flex items-center gap-4'>
-            <span>v1.0.0</span>
-            <a
-              href='https://github.com/mermaid-js/mermaid'
-              target='_blank'
-              rel='noopener noreferrer'
-              className='hover:text-foreground transition-colors'
-            >
-              Powered by Mermaid
-            </a>
+    <SidebarProvider
+      open={!editorCollapsed}
+      onOpenChange={onSidebarOpenChange}
+      className='contents'
+    >
+      <div className='h-screen bg-background text-foreground flex flex-col'>
+        {/* Header */}
+        <header className='flex items-center justify-between px-4 py-4 border-b bg-card/50 backdrop-blur-sm'>
+          <div className='flex items-center gap-3'>
+            <h1 className='text-xl font-bold tracking-tight'>Mermaid Agent</h1>
+            <Badge variant='outline' className='text-xs rounded-sm'>
+              AI Powered Editor
+            </Badge>
           </div>
+          <div className='flex items-center gap-2'>
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() =>
+                window.open(
+                  'https://github.com/devhims/mermaid-agent',
+                  '_blank'
+                )
+              }
+              className='h-8 px-2 text-xs cursor-pointer'
+            >
+              <Github className='h-4 w-4' />
+            </Button>
+
+            <ThemeToggle />
+          </div>
+        </header>
+
+        {/* Main Content */}
+        <div className='flex-1 overflow-hidden'>
+          <ResizablePanelGroup direction='horizontal' className='h-full'>
+            {/* Code Editor Panel */}
+            <ResizablePanel
+              ref={editorPanelRef}
+              defaultSize={editorCollapsed ? 0 : isMobile ? 80 : 35}
+              minSize={isMobile ? 60 : 25}
+              maxSize={isMobile ? 90 : 50}
+              className='min-w-0'
+              collapsible
+              collapsedSize={0}
+            >
+              <div className='h-full border-r bg-card/30'>
+                <div className='h-full p-4'>
+                  <CodeEditor
+                    code={code}
+                    onCodeChange={setCode}
+                    onReset={() => setCode(DEFAULT_CODE)}
+                    onImport={onImportFile}
+                    agentResult={agentResult}
+                    agentStream={!hideAgentPanel ? agentStream : null}
+                    onAcceptAgentResult={acceptAgentResult}
+                    onDismissAgentResult={() => {
+                      setAgentResult(null);
+                      setHideAgentPanel(true);
+                    }}
+                    onStopAgent={stopAgentStreaming}
+                    agentLoading={agentLoading}
+                    agentStreaming={isStreaming}
+                    onFixWithAgent={handleFixWithAgent}
+                    agentStatus={agentStatus}
+                    diagramError={error}
+                    isCollapsed={editorCollapsed}
+                    onToggleCollapse={(open) => {
+                      setEditorCollapsed(!open);
+                      const ref = editorPanelRef.current;
+                      if (!ref) return;
+                      try {
+                        if (open) {
+                          ref.expand();
+                          ref.resize(isMobile ? 80 : 35);
+                        } else {
+                          ref.collapse();
+                        }
+                      } catch {}
+                    }}
+                  />
+                </div>
+              </div>
+            </ResizablePanel>
+
+            <ResizableHandle withHandle />
+
+            {/* Preview Panel */}
+            <ResizablePanel
+              defaultSize={editorCollapsed ? 100 : isMobile ? 20 : 70}
+              minSize={isMobile ? 10 : 50}
+            >
+              <DiagramPreview
+                error={error}
+                containerRef={containerRef}
+                isRendering={isRendering}
+                onDownloadLight={() => downloadPng('light')}
+                onDownloadDark={() => downloadPng('dark')}
+                onDownloadTransparent={() => downloadPng('transparent')}
+                onZoomIn={zoomIn}
+                onZoomOut={zoomOut}
+                onResetView={resetView}
+                zoomPanRef={zoomPanRef}
+                selectedTheme={selectedMermaidTheme}
+                onThemeChange={setSelectedMermaidTheme}
+                onExportCode={exportMmd}
+                onToggleEditor={() => {
+                  const willOpen = editorCollapsed;
+                  setEditorCollapsed(!willOpen);
+                  const ref = editorPanelRef.current;
+                  if (!ref) return;
+                  try {
+                    if (willOpen) {
+                      ref.expand();
+                      ref.resize(isMobile ? 80 : 35);
+                    } else {
+                      ref.collapse();
+                    }
+                  } catch {}
+                }}
+              />
+            </ResizablePanel>
+          </ResizablePanelGroup>
         </div>
-      </footer>
-    </div>
+
+        {/* Footer */}
+        <footer className='px-6 py-3 border-t bg-card/30 backdrop-blur-sm'>
+          <div className='flex items-center justify-between text-xs text-muted-foreground'>
+            <span>Built with Next.js, Mermaid, and GPT-4o</span>
+            <div className='flex items-center gap-4'>
+              <span>v1.0.0</span>
+            </div>
+          </div>
+        </footer>
+      </div>
+    </SidebarProvider>
   );
 }

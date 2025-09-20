@@ -255,7 +255,7 @@ export async function POST(req: NextRequest) {
           return true;
         });
 
-        console.log('🔍 Filtered messages:', filteredMessages);
+        // console.log('🔍 Filtered messages:', filteredMessages);
         return { messages: filteredMessages };
       },
       experimental_output: Output.object({
