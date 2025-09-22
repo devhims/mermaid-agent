@@ -938,7 +938,7 @@ export default function Home() {
               AI Powered Editor
             </Badge>
           </div>
-          <div className='flex items-center gap-2'>
+          <div className='flex flex-col sm:flex-row items-start sm:items-center gap-1 sm:gap-2'>
             <a
               href='https://www.producthunt.com/products/mermaid-agent?embed=true&utm_source=badge-featured&utm_medium=badge&utm_source=badge-mermaid-agent'
               target='_blank'
@@ -953,22 +953,23 @@ export default function Home() {
                 height='32'
               />
             </a>
+            <div className='self-end'>
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() =>
+                  window.open(
+                    'https://github.com/devhims/mermaid-agent',
+                    '_blank'
+                  )
+                }
+                className='h-8 px-2 mr-2 text-xs cursor-pointer'
+              >
+                <IoLogoGithub className='h-4 w-4' />
+              </Button>
 
-            <Button
-              variant='outline'
-              size='sm'
-              onClick={() =>
-                window.open(
-                  'https://github.com/devhims/mermaid-agent',
-                  '_blank'
-                )
-              }
-              className='h-8 px-2 text-xs cursor-pointer'
-            >
-              <IoLogoGithub className='h-4 w-4' />
-            </Button>
-
-            <ThemeToggle />
+              <ThemeToggle />
+            </div>
           </div>
         </header>
 
