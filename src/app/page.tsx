@@ -939,6 +939,21 @@ export default function Home() {
             </Badge>
           </div>
           <div className='flex items-center gap-2'>
+            <a
+              href='https://www.producthunt.com/products/mermaid-agent?embed=true&utm_source=badge-featured&utm_medium=badge&utm_source=badge-mermaid-agent'
+              target='_blank'
+              rel='noopener noreferrer'
+              className='transition-opacity hover:opacity-80'
+            >
+              <img
+                src='https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1018249&theme=light&t=1758529980045'
+                alt='Mermaid Agent - Mermaid diagram editor with agentic error fixing | Product Hunt'
+                style={{ width: '125px', height: '32px' }}
+                width='125'
+                height='32'
+              />
+            </a>
+
             <Button
               variant='outline'
               size='sm'
