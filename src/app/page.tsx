@@ -25,9 +25,11 @@ import {
   getDefaultThemeForMode,
   type MermaidTheme,
 } from '@/lib/mermaid-utils';
+import { validateMermaid } from '@/lib/mermaid-validator';
+import { formatLintErrors } from '@/lib/mermaid-lint';
 import { exportSvgAsPng } from '@/lib/canvas-utils';
 import { importTextFile, exportTextFile } from '@/lib/file-utils';
-import { Github } from 'lucide-react';
+import { IoLogoGithub } from 'react-icons/io';
 import { Button } from '@/components/ui/button';
 
 type AgentUsage = {
@@ -307,6 +309,28 @@ export default function Home() {
         }
 
         const prepared = sanitizeMermaid(debouncedCode);
+
+        // Validate before attempting to render to produce clearer, actionable errors
+        const validation = validateMermaid(prepared);
+        if (!validation.ok) {
+          const header = 'Mermaid syntax issues detected.';
+          const raw = validation.rawMessage
+            ? `Parser: ${validation.rawMessage}`
+            : undefined;
+          const hints =
+            validation.errors && validation.errors.length
+              ? formatLintErrors(validation.errors, { max: 8 })
+              : undefined;
+          const composed = [header, raw, hints].filter(Boolean).join('\n');
+
+          setError(composed || 'Invalid Mermaid diagram.');
+          setIsRendering(false);
+          if (containerRef.current) {
+            containerRef.current.innerHTML = '';
+          }
+          return;
+        }
+
         const { svg } = await renderWithFallback(prepared);
 
         if (cancelled) return;
@@ -926,7 +950,7 @@ export default function Home() {
               }
               className='h-8 px-2 text-xs cursor-pointer'
             >
-              <Github className='h-4 w-4' />
+              <IoLogoGithub className='h-4 w-4' />
             </Button>
 
             <ThemeToggle />
@@ -947,7 +971,7 @@ export default function Home() {
               collapsedSize={0}
             >
               <div className='h-full border-r bg-card/30'>
-                <div className='h-full p-4'>
+                <div className='h-full p-2'>
                   <CodeEditor
                     code={code}
                     onCodeChange={setCode}
@@ -1028,7 +1052,7 @@ export default function Home() {
         {/* Footer */}
         <footer className='px-6 py-3 border-t bg-card/30 backdrop-blur-sm'>
           <div className='flex items-center justify-between text-xs text-muted-foreground'>
-            <span>Built with Next.js, Mermaid, and GPT-4o</span>
+            <span>Built with Next.js, Mermaid, and GPT-4.1</span>
             <div className='flex items-center gap-4'>
               <span>v1.0.0</span>
             </div>

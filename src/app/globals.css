@@ -147,3 +147,35 @@ body {
   background-size: 24px 24px;
   background-position: 0 0;
 }
+
+/* Thin scrollbars (global) */
+:root {
+  --scrollbar-thumb: rgba(100, 116, 139, 0.35); /* slate-500 @ 35% */
+  --scrollbar-thumb-hover: rgba(100, 116, 139, 0.55);
+}
+.dark {
+  --scrollbar-thumb: rgba(148, 163, 184, 0.35); /* slate-400 @ 35% */
+  --scrollbar-thumb-hover: rgba(148, 163, 184, 0.55);
+}
+
+* {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* WebKit browsers */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+/* End thin scrollbars */

@@ -16,7 +16,6 @@
 
 import { streamText, tool, stepCountIs, InferToolOutput } from 'ai';
 
-import { openai } from '@ai-sdk/openai';
 import { google } from '@ai-sdk/google';
 import { z } from 'zod';
 import { NextRequest } from 'next/server';
@@ -67,11 +66,11 @@ export async function POST(req: NextRequest) {
     // ========================================
     // ENVIRONMENT VALIDATION
     // ========================================
-    // Ensure OpenAI API key is configured before proceeding
-    if (!process.env.OPENAI_API_KEY) {
+    // Ensure Google Generative AI API key is configured before proceeding
+    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
       return new Response(
         JSON.stringify({
-          error: 'Missing OPENAI_API_KEY environment variable',
+          error: 'Missing GOOGLE_GENERATIVE_AI_API_KEY environment variable',
         }),
         { status: 500 }
       );
@@ -132,14 +131,11 @@ export async function POST(req: NextRequest) {
     // ========================================
     // AI MODEL SETUP & TOOL CONFIGURATION
     // ========================================
-    // Define the structured output schema for AI SDK v5 experimental_output
-    const ObjectSchema = z.object({
-      fixedCode: z.string().describe('Minimally changed Mermaid code proposal'),
-      explanation: ExplanationSchema.describe(
-        'Explanation of the changes made to fix the diagram'
-      ),
-    });
-    type FixProposal = z.infer<typeof ObjectSchema>;
+    // Define the type for structured output parsing
+    type FixProposal = {
+      fixedCode: string;
+      explanation: string | string[];
+    };
 
     console.log('🧠 streamText with experimental_output: preparing request');
 
@@ -156,6 +152,7 @@ export async function POST(req: NextRequest) {
         fixedCode: z.string(),
         validated: z.boolean(),
         validationError: z.string().optional(),
+        hints: z.string().optional(),
       }),
       execute: async ({ fixedCode }) => {
         console.log('🔧 Tool called: mermaidValidator for json mode');
@@ -167,6 +164,7 @@ export async function POST(req: NextRequest) {
           fixedCode,
           validated: validation.isValid,
           validationError: validation.error,
+          hints: validation.hints,
         };
       },
     });
@@ -178,8 +176,7 @@ export async function POST(req: NextRequest) {
     // ========================================
     // Configure the AI model with tools, structured output, and step limits
     const result = streamText({
-      // model: openai('gpt-4o-mini'),
-      model: google('gemini-2.5-flash'),
+      model: google('gemini-2.5-pro'),
       tools,
       prepareStep({ messages }) {
         // Compact the transcript before each turn so we only resend the
@@ -319,10 +316,6 @@ Return your fix as valid JSON.`,
           let eventCount = 0;
           let accumulatedText = '';
           let hasFinished = false;
-
-          // For Google Gemini compatibility, we parse JSON from text instead of using structured output
-          const structuredOutputPromise: Promise<FixProposal | null> =
-            Promise.resolve(null);
 
           // ========================================
           // EVENT STREAMING LOOP

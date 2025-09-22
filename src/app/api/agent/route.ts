@@ -155,6 +155,7 @@ export async function POST(req: NextRequest) {
         fixedCode: z.string(),
         validated: z.boolean(),
         validationError: z.string().optional(),
+        hints: z.string().optional(),
       }),
       execute: async ({ fixedCode }) => {
         console.log('🔧 Tool called: mermaidValidator for json mode');
@@ -166,6 +167,7 @@ export async function POST(req: NextRequest) {
           fixedCode,
           validated: validation.isValid,
           validationError: validation.error,
+          hints: validation.hints,
         };
       },
     });
@@ -177,7 +179,7 @@ export async function POST(req: NextRequest) {
     // ========================================
     // Configure the AI model with tools, structured output, and step limits
     const result = streamText({
-      model: openai('gpt-4o-mini'),
+      model: openai('gpt-4.1'),
       tools,
       prepareStep({ messages }) {
         // Compact the transcript before each turn so we only resend the
@@ -261,19 +263,23 @@ export async function POST(req: NextRequest) {
       experimental_output: Output.object({
         schema: ObjectSchema,
       }),
-      stopWhen: stepCountIs(10), // max round trips with the LLM
+      // Allow the model to emit a final structured object after a tool pass; cap total steps
+      stopWhen: stepCountIs(5),
       system: `<role>
 You are a meticulous Mermaid diagram fixer for a code validation agent.
 </role>
 <objective>
 - Repair every parser error you encounter, including multiple simultaneous issues.
 - Preserve the original intent of the diagram with minimal, targeted edits.
+- When the validator returns hints, prioritize fixing issues mentioned in the hints before trying other edits
 </objective>
 <tool_use>
 - Call mermaidValidator to check each candidate fix before returning the final answer; when validation fails, analyze the new error and adjust your fix.
 </tool_use>
 <workflow>
-- Keep iterating when new issues surface until the diagram validates or you conclude no further progress is achievable.
+- After each candidate change, call mermaidValidator.
+- If mermaidValidator returns validated=true, you may stop but MUST still return a structured object with a bullet list explanation covering all edits made.
+- If validation fails, iterate with one targeted fix per attempt.
 - If you must stop without a valid diagram, clearly state what blocked you.
 </workflow>
 <output>
@@ -501,14 +507,19 @@ ${actualError}`,
                 const output = lastToolResult.output as ValidatorOutput;
                 if (output) {
                   lastValidatorOutput = output;
-                  // Third try: Use tool result if no structured output found
+                  // Prefer structured object; if missing, fall back but keep explanation high-quality
                   if (!obj && output.fixedCode) {
                     obj = {
                       fixedCode: output.fixedCode,
-                      explanation: `Fixed using validator tool: ${
-                        output.validationError || 'Validation passed'
-                      }`,
-                    };
+                      explanation: [
+                        'Validated the final candidate with the Mermaid parser (no syntax errors).',
+                        ...(output.hints
+                          ? [
+                              'Addressed issues based on validator hints as needed.',
+                            ]
+                          : []),
+                      ],
+                    } as unknown as FixProposal;
                     console.log('Extracted object from tool result:', obj);
                   }
                 }

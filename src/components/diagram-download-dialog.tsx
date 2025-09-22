@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Download, FileText, Loader2 } from 'lucide-react';
+import { TbFileExport } from 'react-icons/tb';
 import { useTheme } from 'next-themes';
 
 type BackgroundVariant = 'light' | 'dark' | 'transparent';
@@ -170,7 +171,7 @@ export function DiagramDownloadDialog({
           className='text-sm shadow-sm cursor-pointer'
           aria-label='Select theme'
         >
-          <Download className='h-4 w-4' />
+          <TbFileExport className='h-4 w-4' />
         </Button>
       </DialogTrigger>
       <DialogContent className='sm:max-w-md'>

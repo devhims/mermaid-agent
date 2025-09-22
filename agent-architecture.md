@@ -1,421 +1,154 @@
-# AI Agent Architecture Documentation
+# AI Agent Architecture
 
 ## Overview
 
-This document describes the implementation of an AI agent system built with AI SDK v5 that can iteratively read, analyze, and fix Mermaid diagram code. The agent uses a multi-step tool usage pattern with controlled iteration limits to ensure reliable operation.
+This single document consolidates the system and agent architecture for the Mermaid Viewer application. It covers frontend-backend interactions, AI service integration, tool calling, validation flows, and runtime behavior as implemented in the current codebase.
 
-## Agent Architecture
+## Frontend Architecture
 
-The AI agent follows the **Multi-Step Tool Usage** pattern from AI SDK v5, which enables the LLM to break down complex tasks into smaller iterative steps without requiring predefined workflows.
+### Core Stack
 
-```mermaid
-graph TD
-    A[Client Request] --> B[Agent API Route]
-    B --> C[Initialize Agent State]
-    C --> D[Configure Tools & LLM]
-    D --> E[Execute Multi-Step Generation]
-
-    E --> F{Step Limit Reached?}
-    F -->|No| G[Tool Call Decision]
-    F -->|Yes| H[Return Final Result]
-
-    G --> I{Which Tool?}
-    I -->|Read| J[readMermaidState Tool]
-    I -->|Edit| K[editMermaidCode Tool]
-    I -->|Final| L[provideAnswer Tool]
-
-    J --> M[Return Current State]
-    K --> N[Update & Validate Code]
-    L --> H
-
-    M --> F
-    N --> O{Validation Result}
-    O -->|Success| P[Update Agent State]
-    O -->|Error| Q[Set Error State]
-    P --> F
-    Q --> F
-
-    style E fill:#e1f5fe
-    style G fill:#f3e5f5
-    style H fill:#e8f5e8
-```
-
-## System Components
-
-### 1. Agent State Management
-
-The agent maintains stateful session data to track the current state of the Mermaid code and any errors:
-
-```typescript
-let agentState = {
-  code: '', // Current Mermaid code
-  error: null as string | null, // Current validation error
-  lastEdit: null as string | null, // Last edit reasoning
-};
-```
-
-### 2. Tool Definitions
-
-The agent implements three core tools using AI SDK v5's tool pattern:
-
-#### Tool 1: readMermaidState
-
-```typescript
-const readMermaidState = tool({
-  description:
-    'Read the current Mermaid code and any error messages from the UI.',
-  inputSchema: z.object({}),
-  execute: async () => ({
-    currentCode: agentState.code,
-    currentError: agentState.error,
-    lastEdit: agentState.lastEdit,
-  }),
-});
-```
-
-#### Tool 2: editMermaidCode
-
-```typescript
-const editMermaidCode = tool({
-  description:
-    'Update the Mermaid code in the UI. This will trigger validation and return any new errors.',
-  inputSchema: z.object({
-    newCode: z.string().describe('The new Mermaid code to set'),
-    reasoning: z
-      .string()
-      .describe('Brief explanation of why this change was made'),
-  }),
-  execute: async ({ newCode, reasoning }) => {
-    // Validation logic
-    // State update
-    // Return result
-  },
-});
-```
-
-#### Tool 3: provideAnswer
-
-```typescript
-const provideAnswer = tool({
-  description:
-    'Provide the final fixed Mermaid code and summary of changes made.',
-  inputSchema: z.object({
-    finalCode: z.string().describe('The final, fixed Mermaid code'),
-    summary: z
-      .string()
-      .describe('Summary of all changes made and issues fixed'),
-    stepsUsed: z.number().describe('Number of steps used to fix the code'),
-  }),
-  // No execute function - this terminates the agent
-});
-```
-
-## Multi-Step Execution Flow
-
-The agent uses AI SDK v5's `stopWhen` parameter with `stepCountIs(5)` to control iteration:
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API
-    participant Agent
-    participant LLM
-    participant Tools
-
-    Client->>API: POST /api/agent
-    Note over Client,API: { action: "start", code: "...", error: "..." }
-
-    API->>Agent: Initialize State
-    Agent->>Agent: Set agentState
-
-    Agent->>LLM: generateText with tools
-    Note over Agent,LLM: stopWhen: stepCountIs(5)
-
-    loop Step 1-5 (until stopWhen condition)
-        LLM->>Tools: Call readMermaidState
-        Tools-->>LLM: Return current state
-
-        LLM->>LLM: Analyze issues
-
-        LLM->>Tools: Call editMermaidCode
-        Note over LLM,Tools: { newCode, reasoning }
-        Tools->>Tools: Validate new code
-        Tools-->>LLM: Return validation result
-
-        alt Code is valid
-            LLM->>Tools: Call provideAnswer
-            Note over Tools: Terminates agent
-        else Code has issues
-            Note over LLM: Continue to next step
-        end
-    end
-
-    Agent-->>API: Return final result
-    API-->>Client: JSON response
-```
-
-## Validation Logic
-
-The agent includes intelligent validation to catch common Mermaid syntax issues:
-
-```mermaid
-flowchart TD
-    A[New Code Input] --> B{Empty Code?}
-    B -->|Yes| C[Error: Code cannot be empty]
-    B -->|No| D[Extract First Line]
-
-    D --> E{Valid Diagram Type?}
-    E -->|No| F[Error: No diagram type detected]
-    E -->|Yes| G[Additional Syntax Checks]
-
-    G --> H{Validation Passed?}
-    H -->|Yes| I[Update Agent State - No Error]
-    H -->|No| J[Update Agent State - Set Error]
-
-    I --> K[Return Success]
-    J --> L[Return Error Details]
-
-    style C fill:#ffebee
-    style F fill:#ffebee
-    style J fill:#ffebee
-    style I fill:#e8f5e8
-    style K fill:#e8f5e8
-```
-
-Valid diagram types checked:
-
-- `graph`, `flowchart`
-- `sequenceDiagram`, `classDiagram`
-- `stateDiagram`, `stateDiagram-v2`
-- `gantt`, `erDiagram`
-- `journey`, `pie`
-- `mindmap`, `timeline`
-
-## AI SDK v5 Configuration
-
-### Core Configuration
-
-```typescript
-const { toolCalls, steps } = await generateText({
-  model: openai('gpt-5-nano'),
-  tools: {
-    readMermaidState,
-    editMermaidCode,
-    provideAnswer,
-  },
-  toolChoice: 'required', // Force tool usage
-  stopWhen: stepCountIs(5), // Maximum 5 steps
-  system: `Expert system prompt...`,
-  prompt: `Task-specific prompt...`,
-});
-```
-
-### Key AI SDK v5 Features Used
-
-1. **Multi-Step Tool Usage**: Enables iterative problem-solving without predefined workflows
-2. **stepCountIs()**: Provides deterministic stopping conditions to prevent infinite loops
-3. **Tool Choice Control**: Ensures the agent always uses tools rather than just generating text
-4. **Step Tracking**: Access to all intermediate steps for debugging and transparency
-
-## Error Handling & Fallback Strategy
-
-The agent implements robust error handling with intelligent fallbacks:
-
-```mermaid
-graph TD
-    A[Agent Execution] --> B{Tool Calls Successful?}
-    B -->|Yes| C{provideAnswer Called?}
-    B -->|No| D[Log Error & Return Failure]
-
-    C -->|Yes| E[Extract Final Answer]
-    C -->|No| F[Check Final State]
-
-    E --> G[Return Structured Success]
-
-    F --> H{Code Valid?}
-    H -->|Yes| I[Return Success with Final Code]
-    H -->|No| J[Return Partial Success with Issues]
-
-    D --> K[Error Response]
-    G --> L[Success Response]
-    I --> L
-    J --> M[Partial Success Response]
-
-    style D fill:#ffebee
-    style K fill:#ffebee
-    style L fill:#e8f5e8
-    style M fill:#fff3e0
-```
-
-## UI Integration
-
-The agent integrates seamlessly with the existing Mermaid viewer UI:
-
-```mermaid
-graph LR
-    A[CodeEditor Component] --> B[🤖 Agent Fix Button]
-    B --> C[handleFixWithAgent()]
-
-    C --> D[POST /api/agent]
-    D --> E{Agent Response}
-
-    E -->|Success| F[Update Code State]
-    E -->|Failure| G[Show Error Message]
-
-    F --> H[Trigger Re-render]
-    G --> I[Display Agent Result]
-
-    I --> J[Accept/Dismiss Actions]
-    J --> K[User Decision]
-
-    style B fill:#e3f2fd
-    style F fill:#e8f5e8
-    style G fill:#ffebee
-```
+- **Next.js 15** (App Router, Turbopack)
+- **React 19** with modern hooks
+- **TypeScript**
+- **Tailwind CSS**
+- **Mermaid.js** for diagram rendering
 
 ### UI Components
 
-1. **Fix with AI Button**: Single primary AI fixing button using the agent approach
-2. **Agent Result Display**: Shows success/failure state with step details
-3. **Step Viewer**: Collapsible details showing each iteration step
-4. **Accept/Dismiss Actions**: Allow users to apply or reject agent suggestions
+- `CodeEditor`: Text editor with AI integration. Contains a vertical `ResizablePanelGroup` splitting Editor and Agent Result panels; both are collapsible and resizable.
+- `DiagramPreview`: Zoomable preview with export controls (PNG export via canvas).
+- `DiagramDownloadDialog`: Advanced export dialog.
+- Theme toggle and responsive layout components.
 
-**Design Decision**: We consolidated from two buttons ("Fix with AI" + "Agent Fix") to a single "✨ Fix with AI" button that uses the superior multi-step agent approach under the hood.
+### Layout & Panels
 
-## Performance & Optimization
+- `src/app/page.tsx` uses a horizontal `ResizablePanelGroup` to split `CodeEditor` (left) and `DiagramPreview` (right).
+- Inside `CodeEditor`, a nested vertical `ResizablePanelGroup` manages the editor and the live agent activity/result panel.
 
-### Step Efficiency
+### Validation & Linting (frontend)
 
-- **Typical Steps**: Most fixes complete in 2-4 steps
-- **Maximum Limit**: Hard cap at 5 steps prevents infinite loops
-- **Early Termination**: Agent stops when code becomes valid
+- `src/lib/mermaid-validator.ts` provides `validateMermaid()` for UI-side pre-render checks. It wraps the Mermaid parser and augments errors with friendly hints from `src/lib/mermaid-lint.ts`.
+- The UI validates before rendering and surfaces concise errors. Rendering is skipped on validation failure to avoid stale previews.
 
-### Response Structure
+## Backend Architecture
 
-```typescript
-interface AgentResponse {
-  success: boolean;
-  message: string;
-  finalCode?: string;
-  stepsUsed?: number;
-  steps?: Array<{
-    action: string;
-    details: string;
-  }>;
-}
-```
+### Shared Validation Tooling
 
-## Agent Workflow Examples
+- `src/app/api/tools.ts` exports `validateMermaidCode(code)` which:
+  - Sanitizes input, detects diagram intent, and uses Mermaid core to parse.
+  - Returns `{ isValid, isLikelyMermaid, error?, diagramType?, hints? }`.
+  - Integrates lint hints from `src/lib/mermaid-lint.ts` for more actionable feedback.
 
-### Example 1: Missing Diagram Type
+### API Routes (current)
 
-```
-Input:  "A --> B\nB --> C"
-Error:  "No diagram type detected"
+- `/api/agent` — OpenAI multi-step fixer
 
-Step 1: readMermaidState() → Read current state
-Step 2: editMermaidCode() → Add "graph TD\n" prefix
-Step 3: Validation passes → Success in 2 steps
+  - Method: POST
+  - Model: `openai('gpt-4.1')`
+  - Tools: `mermaidValidator` (server-side parser + lint hints)
+  - Streaming: NDJSON lines including `text-delta`, `tool-call`, `tool-result`, `structured-output`, `finish`, and final summary payload
+  - Iteration control: `stopWhen: stepCountIs(5)`
+  - Structured output: `experimental_output: Output.object({ fixedCode, explanation })` with fallback extraction from text or the last tool result
 
-Output: "graph TD\nA --> B\nB --> C"
-```
+- `/api/gemini-ai` — Gemini multi-step fixer
 
-### Example 2: Invalid Syntax
+  - Method: POST
+  - Model: `google('gemini-2.5-pro')`
+  - Tools: `mermaidValidator`
+  - Streaming: NDJSON events similar to `/api/agent`
+  - Iteration control: `stopWhen: stepCountIs(6)` (up to ~3 attempts)
+  - Output: Model returns strict JSON in-text; the route parses fenced or plain JSON and falls back to tool results if needed
 
-```
-Input:  "invalid mermaid"
-Error:  "Syntax error"
+- `/api/fix` — Alternative OpenAI fixer (non-UI streaming response)
 
-Step 1: readMermaidState() → Read current state
-Step 2: editMermaidCode() → Replace with valid structure
-Step 3: editMermaidCode() → Refine syntax
-Step 4: Validation passes → Success in 3 steps
+  - Method: POST (+ GET demo)
+  - Model: `openai('gpt-4o-mini')`
+  - Tools: `mermaidValidator`
+  - Iteration control: `stopWhen: [stepCountIs(6), validated-in-last-step]`
+  - Returns a consolidated JSON when completed (no UI event stream here)
 
-Output: "graph TD;\nA-->B;"
-```
+- `/api/workers-ai` — Cloudflare Workers AI integration
 
-## Why Multi-Step Agent vs Single-Shot AI
+  - Methods: GET and POST
+  - Models: `@cf/meta/llama-4-scout-17b-16e-instruct`, `@cf/meta/llama-3.3-70b-instruct-fp8-fast`
+  - Tools: `mermaidValidator`
+  - Streaming: NDJSON with manual tool execution fallback when provider tool calls are not executed
 
-The original implementation included both a traditional "Fix with AI" (single-shot) and "Agent Fix" (multi-step) approach. We've consolidated to use only the superior Agent Fix approach because:
+- Experimental/Test routes
+  - `/api/streamobject-test`: Demonstrates `streamText` with tools and `experimental_output` (structured object streaming).
+  - `/api/gpt-oss`: Direct Cloudflare Responses API test with function tools and schema-enforced JSON.
 
-| Aspect             | Single-Shot AI (Removed) | Multi-Step Agent (Current) |
-| ------------------ | ------------------------ | -------------------------- |
-| **Approach**       | Single generation call   | Iterative problem-solving  |
-| **Validation**     | Post-generation only     | Real-time per step         |
-| **Error Handling** | Manual retry required    | Automatic retry/refinement |
-| **Transparency**   | Black box operation      | Step-by-step visibility    |
-| **Adaptability**   | Fixed prompt/strategy    | Dynamic adaptation         |
-| **Success Rate**   | ~70-80%                  | ~90-95%                    |
-| **Debugging**      | Difficult to debug       | Clear step tracking        |
+### Tool Calling System
 
-## Best Practices & Lessons Learned
+- Single server tool used across routes: **`mermaidValidator`**
+  - Input: `{ fixedCode: string, explanation?: string }` (shape varies slightly by route)
+  - Output: `{ fixedCode, validated, validationError?, hints? }`
+  - Execute: calls `validateMermaidCode(fixedCode)` then returns structured result
 
-### 1. Tool Design
+### Data Flow
 
-- **Single Purpose**: Each tool has one clear responsibility
-- **Clear Schemas**: Well-defined input/output schemas prevent confusion
-- **Stateful Operations**: Tools can modify persistent state safely
+1. User edits Mermaid code in `CodeEditor`.
+2. UI validates locally with `validateMermaid()`; preview render is skipped if invalid.
+3. On "✨ Auto Fix", UI POSTs to `/api/agent` with `{ code, error, step }`.
+4. Backend runs multi-step generation with tool calls; events are streamed as NDJSON lines.
+5. UI consumes events to show live status, tool activity, and the emerging `fixedCode`/`explanation`.
+6. User can apply the final fix into the editor.
 
-### 2. Step Management
+### Validation Flow
 
-- **Conservative Limits**: 5 steps balance capability with performance
-- **Early Termination**: Check for success conditions at each step
-- **Fallback Handling**: Always provide useful output even if incomplete
+1. Frontend sanitizes and validates using `validateMermaid()` and lint hints.
+2. If invalid, UI shows actionable hints (e.g., unbalanced brackets, unquoted parentheses in labels).
+3. Backend tool `validateMermaidCode()` validates candidates from the model and surfaces the same hints in `hints`/`validationError`.
 
-### 3. Validation Strategy
+### AI Processing Flow (multi-step)
 
-- **Progressive Validation**: Check increasingly complex conditions
-- **Helpful Error Messages**: Provide actionable feedback for fixes
-- **False Positive Prevention**: Avoid overly strict validation rules
+- Each attempt: model proposes a minimally changed `fixedCode`, calls `mermaidValidator`, and adapts.
+- OpenAI route uses `experimental_output` to yield `{ fixedCode, explanation }` during streaming; Gemini returns strict JSON text that is parsed server-side.
+- `prepareStep()` compacts transcripts to keep only the freshest tool result and relevant context, reducing token usage.
+- Stop conditions prevent infinite loops and allow early termination on success.
 
-### 4. User Experience
+## Environment Configuration
 
-- **Visual Feedback**: Clear indication of agent progress
-- **Step Transparency**: Show users exactly what the agent did
-- **Flexible Actions**: Allow users to accept, reject, or modify results
+- Required:
+  - `OPENAI_API_KEY` (for `/api/agent`, `/api/fix`, and tests)
+  - `GOOGLE_GENERATIVE_AI_API_KEY` (for `/api/gemini-ai`)
+- Optional (for Workers AI and GPT-OSS tests):
+  - `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`
+
+## Security Considerations
+
+- API keys validated per request.
+- Input sanitization for Mermaid code (server and client).
+- Error responses avoid exposing sensitive details.
+
+## Performance Optimizations
+
+- **Debounced rendering** in the UI to minimize reflows.
+- **Streaming responses** (NDJSON) for responsive UX.
+- **Transcript compaction** via `prepareStep()` to limit token usage.
+- **Step limits** using `stepCountIs()` with success-aware stops.
+
+## Deployment
+
+- Development: Next.js dev server with Turbopack; env in `.env.local`.
+- Production: Next.js app with API routes for AI features; env set via hosting platform.
+
+## UI Integration Summary
+
+- Single "✨ Auto Fix" button in `CodeEditor` triggers `/api/agent`.
+- Live panel shows step-by-step tool calls and validation outcomes.
+- Users can Apply/Dismiss the agent’s final `fixedCode`.
 
 ## Future Enhancements
 
-### Potential Improvements
+- Multi-diagram workspace, collaboration, custom themes.
+- Additional export formats (SVG, PDF), plugin validators.
+- Parallel validation strategies and smarter stop conditions.
 
-1. **Custom Stop Conditions**: Use `hasToolCall()` for more nuanced stopping
-2. **Parallel Validation**: Validate multiple aspects simultaneously
-3. **Learning from Feedback**: Track successful patterns for better prompts
-4. **Advanced Error Recovery**: Handle more complex syntax issues
-5. **Multi-Model Routing**: Use different models for different complexity levels
+## Appendix: Models & Limits (as implemented)
 
-### Architecture Extensions
-
-```mermaid
-graph TD
-    A[Current Agent] --> B[Enhanced Agent v2]
-
-    B --> C[Pattern Recognition]
-    B --> D[Advanced Validation]
-    B --> E[Learning System]
-    B --> F[Multi-Model Support]
-
-    C --> G[Common Issue Detection]
-    D --> H[Semantic Validation]
-    E --> I[Feedback Loop]
-    F --> J[Complexity Routing]
-
-    style B fill:#e1f5fe
-    style C fill:#f3e5f5
-    style D fill:#f3e5f5
-    style E fill:#f3e5f5
-    style F fill:#f3e5f5
-```
-
-## Conclusion
-
-This AI agent implementation demonstrates the power of AI SDK v5's multi-step tool usage pattern. By combining iterative problem-solving, real-time validation, and transparent step tracking, the agent achieves significantly higher success rates than traditional single-shot AI approaches.
-
-The architecture is designed for:
-
-- **Reliability**: Bounded execution with fallback strategies
-- **Transparency**: Complete visibility into agent reasoning
-- **Maintainability**: Modular tool design and clear separation of concerns
-- **Extensibility**: Easy to add new tools and capabilities
-
-This pattern can be adapted for many other iterative AI tasks beyond Mermaid diagram fixing, making it a valuable architectural reference for building robust AI agents.
+- `/api/agent`: `openai('gpt-4.1')`, `stopWhen: stepCountIs(5)`, `experimental_output` object with `{ fixedCode, explanation }`.
+- `/api/gemini-ai`: `google('gemini-2.5-pro')`, `stopWhen: stepCountIs(6)`, strict JSON-in-text parsing.
+- `/api/fix`: `openai('gpt-4o-mini')`, up to 6 steps + success stop.
+- `/api/workers-ai`: Cloudflare models, NDJSON streaming with manual tool fallback.

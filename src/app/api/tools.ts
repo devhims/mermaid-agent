@@ -1,4 +1,5 @@
 import mermaid from 'mermaid/dist/mermaid.core.mjs';
+import { lintMermaid, formatLintErrors } from '@/lib/mermaid-lint';
 
 const MERMAID_KEYWORD_REGEX =
   /^(?:flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|stateDiagram-v2|gantt|erDiagram|journey|pie|mindmap|timeline|gitGraph|quadrantChart|xychart-beta|sankeyDiagram|requirementDiagram|c4context|c4component|c4container|c4deployment|blockDiagram|entityRelationshipDiagram|userJourney)\b/i;
@@ -52,13 +53,12 @@ mermaid.initialize({
 });
 
 // Validate Mermaid code using Mermaid core only
-export async function validateMermaidCode(
-  code: string
-): Promise<{
+export async function validateMermaidCode(code: string): Promise<{
   isValid: boolean;
   error?: string;
   diagramType?: string;
   isLikelyMermaid: boolean;
+  hints?: string; // formatted hints for AI and UI
 }> {
   // Sanitize the code (same logic as frontend)
   let sanitized = code
@@ -100,6 +100,7 @@ export async function validateMermaidCode(
         ? String((result as { diagramType: unknown }).diagramType)
         : diagramTypeHint;
     console.log('✅ Mermaid validation passed:', result);
+    // Validation successful - no need for lint hints
     return { isValid: true, isLikelyMermaid: true, diagramType };
   } catch (error: unknown) {
     const errorMessage =
@@ -107,11 +108,14 @@ export async function validateMermaidCode(
         ? error.message
         : String(error ?? 'Unknown parse error');
     console.log('❌ Mermaid validation failed:', errorMessage);
+    const lint = lintMermaid(sanitized);
+    const hints = lint.length ? formatLintErrors(lint, { max: 8 }) : undefined;
     return {
       isValid: false,
-      error: errorMessage,
+      error: hints ? `${errorMessage}\n${hints}` : errorMessage,
       diagramType: diagramTypeHint,
       isLikelyMermaid,
+      hints,
     };
   }
 }
