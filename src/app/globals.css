@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import "tw-animate-css";
 
 @custom-variant dark (
   &:where(
@@ -89,6 +90,7 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --radius: var(----radius);
 }
 
 /* Dark mode variables */
@@ -179,3 +181,12 @@ body {
   background-color: var(--scrollbar-thumb-hover);
 }
 /* End thin scrollbars */
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

@@ -21,20 +21,9 @@ import {
 import { Message, MessageContent } from '@/components/ai-elements/message';
 import { Loader } from '@/components/ai-elements/loader';
 import { Response } from '@/components/ai-elements/response';
-import {
-  PromptInput,
-  PromptInputAttachment,
-  PromptInputAttachments,
-  PromptInputButton,
-  PromptInputTextarea,
-  PromptInputSubmit,
-} from '@/components/ai-elements/prompt-input';
+import { PromptBox } from '@/components/ui/chatgpt-prompt-input';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import type {
-  PromptInputHandle,
-  PromptInputMessage,
-} from '@/components/ai-elements/prompt-input';
 
 type GenerateChatProps = {
   currentCode: string;
@@ -65,7 +54,6 @@ export function GenerateChat({
   const isDefaultCode = currentCode.trim() === DEFAULT_CODE.trim();
   const [copied, setCopied] = useState(false);
   const stickContextRef = useRef<StickToBottomContext | null>(null);
-  const promptInputRef = useRef<PromptInputHandle | null>(null);
 
   // Shared editor and agent state
   const debouncedCurrentCode = useDebounced(currentCode, 120);
@@ -206,12 +194,8 @@ export function GenerateChat({
     return () => cancelAnimationFrame(id);
   }, [messages, status]);
 
-  const handleSubmit = async (
-    message: PromptInputMessage,
-    event: React.FormEvent<HTMLFormElement>
-  ) => {
-    event.preventDefault();
-    console.log('handleSubmit called with:', message);
+  const handleSubmit = async (data: { text: string; files?: FileUIPart[] }) => {
+    console.log('handleSubmit called with:', data);
 
     // If currently submitting or streaming, stop the request
     if (status === 'submitted' || status === 'streaming') {
@@ -219,35 +203,51 @@ export function GenerateChat({
       return;
     }
 
-    const hasText = Boolean(message.text?.trim());
-    const hasFiles = Boolean(message.files?.length);
+    const hasText = Boolean(data.text?.trim());
+    const hasFiles = Boolean(data.files?.length);
     console.log('hasText:', hasText, 'hasFiles:', hasFiles);
 
     if (!hasText && !hasFiles) return;
 
     setInput('');
 
-    // Visually detach attachments immediately via imperative handle
-    promptInputRef.current?.unlink?.();
+    let fileParts: Array<{
+      type: 'file';
+      mediaType: string;
+      url: string;
+      filename?: string;
+    }> = [];
 
-    // Use already uploaded blob URLs
-    const fileParts =
-      hasFiles && message.files
-        ? message.files.map((file) => {
-            // Cast to include id property that PromptInput adds internally
-            const fileWithId = file as FileUIPart & { id: string };
-            const uploadState = fileUploadStates[fileWithId.id];
-            return {
-              type: 'file' as const,
-              mediaType: file.mediaType,
-              url: uploadState?.blobUrl || file.url, // Use blob URL if available, fallback to original
-              filename: file.filename,
-            };
-          })
-        : [];
+    // Handle file uploads if present - files should already be uploaded
+    if (hasFiles && data.files) {
+      // Get all completed upload states
+      const completedUploads = Object.values(fileUploadStates).filter(
+        (state) => state.status === 'complete' && state.blobUrl
+      );
+
+      for (
+        let i = 0;
+        i < data.files.length && i < completedUploads.length;
+        i++
+      ) {
+        const file = data.files[i];
+        const uploadState = completedUploads[i];
+
+        if (uploadState.blobUrl) {
+          fileParts.push({
+            type: 'file' as const,
+            mediaType: file.mediaType,
+            url: uploadState.blobUrl,
+            filename: file.filename,
+          });
+        } else {
+          console.warn('No blob URL found for completed upload');
+        }
+      }
+    }
 
     console.log('Sending message with text and file parts:', {
-      text: message.text,
+      text: data.text,
       fileParts: fileParts.map((f) => ({
         ...f,
         url: `${f.url.substring(0, 50)}...`,
@@ -258,47 +258,41 @@ export function GenerateChat({
     await sendMessage({
       role: 'user',
       parts: [
-        ...(hasText ? [{ type: 'text' as const, text: message.text! }] : []),
+        ...(hasText ? [{ type: 'text' as const, text: data.text }] : []),
         ...fileParts,
       ],
     });
-
-    // Clear attachments and upload states after successful submission
-    promptInputRef.current?.clear?.();
-    setFileUploadStates({});
-  };
-
-  const hasMessages = messages.length > 0;
-
-  const handleCopyClick = async () => {
-    try {
-      await navigator.clipboard.writeText(currentCode);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
-      console.error('Failed to copy:', error);
-    }
   };
 
   // Handle file uploads when files are added
   const handleFilesAdded = useCallback(
     async (files: (FileUIPart & { id: string })[]) => {
-      // Set all new files to uploading state
-      setFileUploadStates((prev) => {
-        const newStates = { ...prev };
-        files.forEach((file) => {
-          newStates[file.id] = { status: 'uploading', progress: 0 };
-        });
-        return newStates;
+      // Clear any existing upload states and set new files to uploading state
+      const newStates: Record<
+        string,
+        {
+          status: 'uploading' | 'complete' | 'error';
+          blobUrl?: string;
+          error?: string;
+          progress?: number;
+        }
+      > = {};
+      files.forEach((file) => {
+        newStates[file.id] = { status: 'uploading', progress: 0 };
       });
+      setFileUploadStates(newStates);
 
       // Upload each file
       for (const file of files) {
         try {
+          // Get the blob from the URL and create a File object
           const response = await fetch(file.url);
           const blob = await response.blob();
+          const fileObj = new File([blob], file.filename || 'upload', {
+            type: file.mediaType || 'image/jpeg',
+          });
 
-          const blobResult = await upload(file.filename || 'upload', blob, {
+          const blobResult = await upload(file.filename || 'upload', fileObj, {
             access: 'public',
             handleUploadUrl: '/api/upload-blob',
             onUploadProgress: (progress) => {
@@ -343,26 +337,20 @@ export function GenerateChat({
     });
   }, []);
 
-  // Set up the callbacks when component mounts
-  useEffect(() => {
-    if (promptInputRef.current?.setOnFilesAdded) {
-      promptInputRef.current.setOnFilesAdded(handleFilesAdded);
-    }
-    if (promptInputRef.current?.setOnFileRemoved) {
-      promptInputRef.current.setOnFileRemoved(handleFileRemoved);
-    }
-  }, [handleFilesAdded, handleFileRemoved]);
+  const hasMessages = messages.length > 0;
 
-  // Check if all uploads are complete
-  const allUploadsComplete = Object.values(fileUploadStates).every(
-    (state) => state.status === 'complete'
-  );
-  const hasPendingUploads = Object.values(fileUploadStates).some(
-    (state) => state.status === 'uploading'
-  );
+  const handleCopyClick = async () => {
+    try {
+      await navigator.clipboard.writeText(currentCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      console.error('Failed to copy:', error);
+    }
+  };
 
   return (
-    <div className='flex h-full min-h-0 flex-col'>
+    <div className='flex h-full min-h-0 flex-col relative'>
       <div className='rounded-lg border border-border/60 bg-card/60 shadow-sm backdrop-blur-sm flex flex-col h-full min-h-0 overflow-hidden'>
         {/* Final Code Viewer at the top - only show when we have generated code */}
         {!isDefaultCode && (
@@ -635,7 +623,7 @@ export function GenerateChat({
                                 ))}
                               </div>
                             )}
-                            <Response>{content || 'No content'}</Response>
+                            <Response>{content || ''}</Response>
                           </>
                         )}
                       </MessageContent>
@@ -648,54 +636,22 @@ export function GenerateChat({
             <ConversationScrollButton className='bottom-20 z-30' />
           </Conversation>
         </div>
+      </div>
 
-        {/* Prompt input stays at the bottom to drive generation */}
-        <div className='border-t border-border bg-muted/30 px-2 py-2'>
+      {/* Floating prompt input at the bottom */}
+      <div className='absolute bottom-0 left-0 right-0 z-40 shadow-2xl'>
+        <div className='px-4 py-2'>
           <div className='mx-auto w-full max-w-3xl'>
-            <PromptInput
-              ref={promptInputRef}
+            <PromptBox
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
               onSubmit={handleSubmit}
-              className='border border-border bg-background shadow-sm'
-              accept='image/*' // Accept only image files
-              multiple={false} // Single image at a time
-            >
-              <PromptInputAttachments>
-                {(attachment) => (
-                  <PromptInputAttachment
-                    data={attachment}
-                    uploadState={fileUploadStates[attachment.id]}
-                  />
-                )}
-              </PromptInputAttachments>
-              <div className='flex items-end gap-2'>
-                <PromptInputButton
-                  className='h-11 w-11 border border-primary/20 bg-background hover:bg-muted/50 cursor-pointer'
-                  onClick={() => {
-                    promptInputRef.current?.fileInputRef.current?.click();
-                  }}
-                >
-                  <Paperclip className='size-4' />
-                </PromptInputButton>
-                <PromptInputTextarea
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  placeholder='Upload an image or describe what you want'
-                  className='flex-1 min-h-11 max-h-[120px] resize-none'
-                  preventSubmit={hasPendingUploads}
-                />
-                <PromptInputSubmit
-                  status={status}
-                  disabled={
-                    (!input &&
-                      status !== 'streaming' &&
-                      status !== 'submitted') ||
-                    hasPendingUploads ||
-                    !allUploadsComplete
-                  }
-                  className='h-11 w-11 bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 border border-primary/20 cursor-pointer'
-                />
-              </div>
-            </PromptInput>
+              onFilesAdded={handleFilesAdded}
+              onFileRemoved={handleFileRemoved}
+              uploadStates={fileUploadStates}
+              placeholder='Upload an image or describe what you want'
+              className='max-h-[120px] shadow-sm'
+            />
           </div>
         </div>
       </div>
