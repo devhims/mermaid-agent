@@ -4,6 +4,7 @@ import * as PopoverPrimitive from '@radix-ui/react-popover';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import type { FileUIPart } from 'ai';
 import { nanoid } from 'nanoid';
+import { useDropzone } from 'react-dropzone';
 
 // --- Utility Function & Radix Primitives (Unchanged) ---
 type ClassValue = string | number | boolean | null | undefined;
@@ -571,112 +572,133 @@ export const PromptBox = React.forwardRef<
       }
     };
 
+    // Dropzone configuration
+    const { getRootProps, getInputProps, isDragActive } = useDropzone({
+      accept: {
+        'image/*': ['.jpeg', '.jpg', '.png', '.gif', '.webp', '.svg'],
+      },
+      multiple: true,
+      noClick: true, // Disable click to open file dialog since we have our own button
+      onDrop: (acceptedFiles) => {
+        if (acceptedFiles.length > 0) {
+          addFiles(acceptedFiles);
+        }
+      },
+    });
+
     return (
-      <form
-        onSubmit={handleSubmit}
-        className={cn(
-          'flex flex-col rounded-lg p-2 shadow-sm transition-colors bg-card border border-border cursor-text',
-          'max-h-[100px] sm:max-h-[200px] overflow-y-auto',
-          className
-        )}
-      >
-        <input
-          type='file'
-          ref={fileInputRef}
-          onChange={handleFileChange}
-          className='hidden'
-          accept='image/*'
-        />
+      <div className='relative'>
+        <form
+          {...getRootProps()}
+          onSubmit={handleSubmit}
+          className={cn(
+            'relative flex flex-col rounded-lg p-2 shadow-sm transition-all bg-card border cursor-text',
+            'max-h-[100px] sm:max-h-[200px] overflow-y-auto',
+            isDragActive
+              ? 'border-primary bg-primary/5 border-dashed'
+              : 'border-border',
+            className
+          )}
+        >
+          <input {...getInputProps()} />
+          <input
+            type='file'
+            ref={fileInputRef}
+            onChange={handleFileChange}
+            className='hidden'
+            accept='image/*'
+          />
 
-        {/* Attachments */}
-        {attachments.length > 0 && (
-          <div className='flex flex-wrap gap-2 p-3 pt-0'>
-            {attachments.map((attachment) => {
-              const uploadState = uploadStates?.[attachment.id];
-              return (
-                <div
-                  key={attachment.id}
-                  className='group relative h-14 w-14 rounded-md border'
-                >
-                  {attachment.mediaType?.startsWith('image/') &&
-                  attachment.url ? (
-                    <img
-                      alt={attachment.filename || 'attachment'}
-                      className='size-full rounded-md object-cover'
-                      src={attachment.url}
-                    />
-                  ) : (
-                    <div className='flex size-full items-center justify-center text-muted-foreground'>
-                      📎
-                    </div>
-                  )}
-
-                  {/* Upload progress overlay */}
-                  {uploadState?.status === 'uploading' && (
-                    <div className='absolute inset-0 flex items-center justify-center rounded-md bg-black/50'>
-                      {uploadState.progress !== undefined ? (
-                        <CircularProgress progress={uploadState.progress} />
-                      ) : (
-                        <div className='h-6 w-6 animate-spin rounded-full border-2 border-white border-t-transparent' />
-                      )}
-                    </div>
-                  )}
-
-                  {/* Error indicator */}
-                  {uploadState?.status === 'error' && (
-                    <div className='absolute -right-1.5 -top-1.5 h-6 w-6 rounded-full bg-destructive flex items-center justify-center'>
-                      ✕
-                    </div>
-                  )}
-
-                  <button
-                    onClick={() => removeAttachment(attachment.id)}
-                    className='cursor-pointer absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity'
-                    type='button'
+          {/* Attachments */}
+          {attachments.length > 0 && (
+            <div className='flex flex-wrap gap-2 p-3 pt-0'>
+              {attachments.map((attachment) => {
+                const uploadState = uploadStates?.[attachment.id];
+                return (
+                  <div
+                    key={attachment.id}
+                    className='group relative h-14 w-14 rounded-md border'
                   >
-                    ✕
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                    {attachment.mediaType?.startsWith('image/') &&
+                    attachment.url ? (
+                      <img
+                        alt={attachment.filename || 'attachment'}
+                        className='size-full rounded-md object-cover'
+                        src={attachment.url}
+                      />
+                    ) : (
+                      <div className='flex size-full items-center justify-center text-muted-foreground'>
+                        📎
+                      </div>
+                    )}
 
-        <textarea
-          ref={internalTextareaRef}
-          rows={1}
-          value={props.value || ''}
-          onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
-          placeholder='Message...'
-          className='custom-scrollbar w-full resize-none border-0 bg-transparent p-3 text-foreground placeholder:text-muted-foreground placeholder: text-sm focus:ring-0 focus-visible:outline-none min-h-12'
-          {...props}
-        />
+                    {/* Upload progress overlay */}
+                    {uploadState?.status === 'uploading' && (
+                      <div className='absolute inset-0 flex items-center justify-center rounded-md bg-black/50'>
+                        {uploadState.progress !== undefined ? (
+                          <CircularProgress progress={uploadState.progress} />
+                        ) : (
+                          <div className='h-6 w-6 animate-spin rounded-full border-2 border-white border-t-transparent' />
+                        )}
+                      </div>
+                    )}
 
-        <div className='mt-0.5 p-1 pt-0'>
-          <div className='flex items-center gap-2'>
-            <button
-              type='button'
-              onClick={handlePlusClick}
-              className='cursor-pointer flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none'
-            >
-              <PlusIcon className='h-6 w-6' />
-              <span className='sr-only'>Attach image</span>
-            </button>
+                    {/* Error indicator */}
+                    {uploadState?.status === 'error' && (
+                      <div className='absolute -right-1.5 -top-1.5 h-6 w-6 rounded-full bg-destructive flex items-center justify-center'>
+                        ✕
+                      </div>
+                    )}
 
-            <div className='ml-auto flex items-center gap-2'>
+                    <button
+                      onClick={() => removeAttachment(attachment.id)}
+                      className='cursor-pointer absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity'
+                      type='button'
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <textarea
+            ref={internalTextareaRef}
+            rows={1}
+            value={props.value || ''}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            placeholder='Message...'
+            className='custom-scrollbar w-full resize-none border-0 bg-transparent p-3 text-foreground placeholder:text-muted-foreground placeholder: text-sm focus:ring-0 focus-visible:outline-none min-h-12'
+            {...props}
+          />
+
+          <div className='mt-0.5 p-1 pt-0'>
+            <div className='flex items-center gap-2'>
               <button
-                type='submit'
-                disabled={!hasValue || hasUploadsInProgress}
-                className='cursor-pointer flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50'
+                type='button'
+                onClick={handlePlusClick}
+                className='cursor-pointer flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none'
               >
-                <SendIcon className='h-6 w-6 text-bold' />
-                <span className='sr-only'>Send message</span>
+                <PlusIcon className='h-6 w-6' />
+                <span className='sr-only'>Attach image</span>
               </button>
+
+              <div className='ml-auto flex items-center gap-2'>
+                <button
+                  type='submit'
+                  disabled={!hasValue || hasUploadsInProgress}
+                  className='cursor-pointer flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50'
+                >
+                  <SendIcon className='h-6 w-6 text-bold' />
+                  <span className='sr-only'>Send message</span>
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      </form>
+        </form>
+      </div>
     );
   }
 );
