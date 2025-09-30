@@ -179,7 +179,7 @@ export async function POST(req: NextRequest) {
     // ========================================
     // Configure the AI model with tools, structured output, and step limits
     const result = streamText({
-      model: openai('gpt-4.1'),
+      model: openai('gpt-4.1-mini'),
       tools,
       prepareStep({ messages }) {
         // Compact the transcript before each turn so we only resend the

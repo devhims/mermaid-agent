@@ -222,7 +222,7 @@ export async function POST(req: NextRequest) {
     }
 
     const result = streamText({
-      model: openai('gpt-4.1'),
+      model: openai('gpt-4.1-mini'),
       tools,
       experimental_output: Output.object({
         schema: MermaidDiagramSchema,

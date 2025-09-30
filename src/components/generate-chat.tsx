@@ -8,7 +8,6 @@ import { Copy, CheckCheck, Paperclip } from 'lucide-react';
 import NextImage from 'next/image';
 import type { UIMessage } from 'ai';
 import type { StickToBottomContext } from 'use-stick-to-bottom';
-import type { AgentActivityStep } from '@/components/diagram-editor';
 import type { FileUIPart } from 'ai';
 import { validateMermaid } from '@/lib/mermaid-validator';
 import { formatLintErrors } from '@/lib/mermaid-lint';
@@ -84,18 +83,6 @@ export function GenerateChat({
       }
     >
   >({});
-
-  type AgentUsage = {
-    totalTokens?: number;
-    inputTokens?: number;
-    outputTokens?: number;
-  };
-  type AgentStatus = {
-    label: string;
-    detail?: string;
-    tone: 'progress' | 'success' | 'error';
-    toolName?: string;
-  };
 
   const normalizeDiagram = (raw: string): string => {
     // Strip code fences and leading/trailing whitespace
@@ -692,7 +679,7 @@ export function GenerateChat({
                 <PromptInputTextarea
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
-                  placeholder='Upload a diagram image or describe what you want'
+                  placeholder='Upload an image or describe what you want'
                   className='flex-1 min-h-11 max-h-[120px] resize-none'
                   preventSubmit={hasPendingUploads}
                 />
