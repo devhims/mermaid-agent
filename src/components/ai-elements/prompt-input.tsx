@@ -23,7 +23,7 @@ import {
   PaperclipIcon,
   PlusIcon,
   SendIcon,
-  SquareIcon,
+  CirclePause,
   XIcon,
 } from 'lucide-react';
 import { nanoid } from 'nanoid';
@@ -73,14 +73,56 @@ export const usePromptInputAttachments = () => {
   return context;
 };
 
+function CircularProgress({ progress }: { progress: number }) {
+  const radius = 12;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDasharray = circumference;
+  const strokeDashoffset = circumference - (progress / 100) * circumference;
+
+  return (
+    <div className='relative w-8 h-8'>
+      <svg className='w-8 h-8 transform -rotate-90' viewBox='0 0 32 32'>
+        {/* Background circle */}
+        <circle
+          cx='16'
+          cy='16'
+          r={radius}
+          stroke='rgba(255, 255, 255, 0.2)'
+          strokeWidth='2'
+          fill='none'
+        />
+        {/* Progress circle */}
+        <circle
+          cx='16'
+          cy='16'
+          r={radius}
+          stroke='white'
+          strokeWidth='2'
+          fill='none'
+          strokeDasharray={strokeDasharray}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap='round'
+          className='transition-all duration-300 ease-out'
+        />
+      </svg>
+    </div>
+  );
+}
+
 export type PromptInputAttachmentProps = HTMLAttributes<HTMLDivElement> & {
   data: FileUIPart & { id: string };
   className?: string;
+  uploadState?: {
+    status: 'uploading' | 'complete' | 'error';
+    error?: string;
+    progress?: number;
+  };
 };
 
 export function PromptInputAttachment({
   data,
   className,
+  uploadState,
   ...props
 }: PromptInputAttachmentProps) {
   const attachments = usePromptInputAttachments();
@@ -104,6 +146,25 @@ export function PromptInputAttachment({
           <PaperclipIcon className='size-4' />
         </div>
       )}
+
+      {/* Upload progress overlay */}
+      {uploadState?.status === 'uploading' && (
+        <div className='absolute inset-0 flex items-center justify-center rounded-md bg-black/50'>
+          {uploadState.progress !== undefined ? (
+            <CircularProgress progress={uploadState.progress} />
+          ) : (
+            <Loader2Icon className='h-6 w-6 animate-spin text-white' />
+          )}
+        </div>
+      )}
+
+      {/* Error indicator */}
+      {uploadState?.status === 'error' && (
+        <div className='absolute -right-1.5 -top-1.5 h-6 w-6 rounded-full bg-destructive flex items-center justify-center'>
+          <XIcon className='h-3 w-3 text-destructive-foreground' />
+        </div>
+      )}
+
       <Button
         aria-label='Remove attachment'
         className='-right-1.5 -top-1.5 absolute h-6 w-6 rounded-full opacity-0 group-hover:opacity-100'
@@ -222,6 +283,12 @@ export type PromptInputProps = Omit<
 export type PromptInputHandle = {
   unlink: () => void;
   clear: () => void;
+  getAttachments: () => (FileUIPart & { id: string })[];
+  setOnFilesAdded: (
+    callback: (files: (FileUIPart & { id: string })[]) => void
+  ) => void;
+  setOnFileRemoved: (callback: (fileId: string) => void) => void;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
 };
 
 export const PromptInput = forwardRef<PromptInputHandle, PromptInputProps>(
@@ -244,6 +311,10 @@ export const PromptInput = forwardRef<PromptInputHandle, PromptInputProps>(
     const inputRef = useRef<HTMLInputElement | null>(null);
     const anchorRef = useRef<HTMLSpanElement>(null);
     const formRef = useRef<HTMLFormElement | null>(null);
+    const onFilesAddedRef = useRef<
+      ((files: (FileUIPart & { id: string })[]) => void) | null
+    >(null);
+    const onFileRemovedRef = useRef<((fileId: string) => void) | null>(null);
 
     // Find nearest form to scope drag & drop
     useEffect(() => {
@@ -292,6 +363,8 @@ export const PromptInput = forwardRef<PromptInputHandle, PromptInputProps>(
           });
           return;
         }
+        let addedFiles: (FileUIPart & { id: string })[] = [];
+
         setItems((prev) => {
           const capacity =
             typeof maxFiles === 'number'
@@ -307,16 +380,23 @@ export const PromptInput = forwardRef<PromptInputHandle, PromptInputProps>(
           }
           const next: (FileUIPart & { id: string })[] = [];
           for (const file of capped) {
-            next.push({
+            const fileData = {
               id: nanoid(),
-              type: 'file',
+              type: 'file' as const,
               url: URL.createObjectURL(file),
               mediaType: file.type,
               filename: file.name,
-            });
+            };
+            next.push(fileData);
           }
+          addedFiles = next;
           return prev.concat(next);
         });
+
+        // Call the callback with the newly added files
+        if (addedFiles.length > 0 && onFilesAddedRef.current) {
+          onFilesAddedRef.current(addedFiles);
+        }
       },
       [matchesAccept, maxFiles, maxFileSize, onError]
     );
@@ -329,6 +409,11 @@ export const PromptInput = forwardRef<PromptInputHandle, PromptInputProps>(
         }
         return prev.filter((file) => file.id !== id);
       });
+
+      // Call the remove callback
+      if (onFileRemovedRef.current) {
+        onFileRemovedRef.current(id);
+      }
     }, []);
 
     const clear = useCallback(() => {
@@ -347,7 +432,41 @@ export const PromptInput = forwardRef<PromptInputHandle, PromptInputProps>(
       setItems(() => []);
     }, []);
 
-    useImperativeHandle(ref, () => ({ unlink, clear }), [unlink, clear]);
+    const getAttachments = useCallback(() => items, [items]);
+
+    const setOnFilesAdded = useCallback(
+      (callback: (files: (FileUIPart & { id: string })[]) => void) => {
+        onFilesAddedRef.current = callback;
+      },
+      []
+    );
+
+    const setOnFileRemoved = useCallback(
+      (callback: (fileId: string) => void) => {
+        onFileRemovedRef.current = callback;
+      },
+      []
+    );
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        unlink,
+        clear,
+        getAttachments,
+        setOnFilesAdded,
+        setOnFileRemoved,
+        fileInputRef: inputRef,
+      }),
+      [
+        unlink,
+        clear,
+        getAttachments,
+        setOnFilesAdded,
+        setOnFileRemoved,
+        inputRef,
+      ]
+    );
 
     // Note: File input cannot be programmatically set for security reasons
     // The syncHiddenInput prop is no longer functional
@@ -456,7 +575,7 @@ export const PromptInput = forwardRef<PromptInputHandle, PromptInputProps>(
         />
         <form
           className={cn(
-            'w-full divide-y overflow-hidden rounded-xl border bg-background shadow-sm',
+            'w-full overflow-hidden rounded-xl border bg-background shadow-sm',
             className
           )}
           onSubmit={handleSubmit}
@@ -476,12 +595,15 @@ export const PromptInputBody = ({
   <div className={cn(className, 'flex flex-col')} {...props} />
 );
 
-export type PromptInputTextareaProps = ComponentProps<typeof Textarea>;
+export type PromptInputTextareaProps = ComponentProps<typeof Textarea> & {
+  preventSubmit?: boolean;
+};
 
 export const PromptInputTextarea = ({
   onChange,
   className,
   placeholder = 'What would you like to know?',
+  preventSubmit = false,
   ...props
 }: PromptInputTextareaProps) => {
   const attachments = usePromptInputAttachments();
@@ -495,6 +617,11 @@ export const PromptInputTextarea = ({
 
       if (e.shiftKey) {
         // Allow newline
+        return;
+      }
+
+      // Don't submit if submission is prevented (e.g., during uploads)
+      if (preventSubmit) {
         return;
       }
 
@@ -667,7 +794,7 @@ export const PromptInputSubmit = ({
   if (status === 'submitted') {
     Icon = <Loader2Icon className='size-4 animate-spin' />;
   } else if (status === 'streaming') {
-    Icon = <SquareIcon className='size-4' />;
+    Icon = <CirclePause className='size-4' />;
   } else if (status === 'error') {
     Icon = <XIcon className='size-4' />;
   }

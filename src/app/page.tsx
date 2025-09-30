@@ -35,6 +35,7 @@ import { formatLintErrors } from '@/lib/mermaid-lint';
 import { exportSvgAsPng } from '@/lib/canvas-utils';
 import { importTextFile, exportTextFile } from '@/lib/file-utils';
 import { IoLogoGithub } from 'react-icons/io';
+import { Sparkles, Wrench } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 type AgentUsage = {
@@ -163,6 +164,8 @@ export default function Home() {
   const { resolvedTheme } = useTheme();
   const [selectedMermaidTheme, setSelectedMermaidTheme] =
     useState<MermaidTheme>('default');
+  const [activeTab, setActiveTab] = useState<'generate' | 'fix'>('generate');
+  const [panelSizes, setPanelSizes] = useState({ editor: 38, diagram: 62 });
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const zoomPanRef = useRef<ReactZoomPanPinchRef | null>(null);
@@ -182,15 +185,15 @@ export default function Home() {
   const isMobile = useIsMobile();
 
   // Collapse editor by default on mobile (run once after mobile is known)
-  useEffect(() => {
-    if (isMobile && !didInitMobileCollapseRef.current) {
-      setEditorCollapsed(true);
-      try {
-        editorPanelRef.current?.collapse();
-      } catch {}
-      didInitMobileCollapseRef.current = true;
-    }
-  }, [isMobile]);
+  // useEffect(() => {
+  //   if (isMobile && !didInitMobileCollapseRef.current) {
+  //     setEditorCollapsed(true);
+  //     try {
+  //       editorPanelRef.current?.collapse();
+  //     } catch {}
+  //     didInitMobileCollapseRef.current = true;
+  //   }
+  // }, [isMobile]);
 
   const onSidebarOpenChange = (open: boolean) => {
     setEditorCollapsed(!open);
@@ -199,7 +202,7 @@ export default function Home() {
     try {
       if (open) {
         ref.expand();
-        ref.resize(isMobile ? 80 : 35);
+        ref.resize(panelSizes.editor);
       } else {
         ref.collapse();
       }
@@ -270,6 +273,19 @@ export default function Home() {
     );
   }, [resolvedTheme]);
 
+  // Update panel sizes when mobile state is detected
+  useEffect(() => {
+    const newSizes = isMobile
+      ? { editor: 80, diagram: 20 }
+      : { editor: 38, diagram: 62 };
+    setPanelSizes(newSizes);
+
+    // Also resize the actual panels if they exist
+    if (editorPanelRef.current) {
+      editorPanelRef.current.resize(newSizes.editor);
+    }
+  }, [isMobile]);
+
   useEffect(() => {
     let cancelled = false;
     const el = containerRef.current;
@@ -279,6 +295,19 @@ export default function Home() {
     if (el) el.addEventListener('mousemove', onMove, { passive: true });
 
     async function render() {
+      // Don't render diagram on generate tab if we only have default code
+      if (
+        activeTab === 'generate' &&
+        debouncedCode.trim() === DEFAULT_CODE.trim()
+      ) {
+        setError(null);
+        setIsRendering(false);
+        if (containerRef.current) {
+          containerRef.current.innerHTML = '';
+        }
+        return;
+      }
+
       // Wait for the preview container to mount (first load race)
       if (!containerRef.current) {
         for (let i = 0; i < 10 && !containerRef.current; i++) {
@@ -382,7 +411,7 @@ export default function Home() {
       cancelled = true;
       if (el) el.removeEventListener('mousemove', onMove as EventListener);
     };
-  }, [debouncedCode, selectedMermaidTheme, resolvedTheme]);
+  }, [debouncedCode, selectedMermaidTheme, resolvedTheme, activeTab]);
 
   function zoomIn() {
     if (zoomPanRef.current) {
@@ -974,7 +1003,7 @@ export default function Home() {
           <ResizablePanelGroup direction='horizontal' className='h-full'>
             <ResizablePanel
               ref={editorPanelRef}
-              defaultSize={editorCollapsed ? 0 : isMobile ? 80 : 38}
+              defaultSize={editorCollapsed ? 0 : panelSizes.editor}
               minSize={isMobile ? 60 : 30}
               maxSize={isMobile ? 90 : 50}
               className='min-w-0'
@@ -984,13 +1013,28 @@ export default function Home() {
               <div className='h-full min-h-0 border-r bg-card/30'>
                 <div className='h-full min-h-0 p-3 flex flex-col gap-3'>
                   <Tabs
-                    defaultValue='generate'
+                    value={activeTab}
+                    onValueChange={(value) =>
+                      setActiveTab(value as 'generate' | 'fix')
+                    }
                     className='flex-1 min-h-0 flex flex-col'
                   >
                     <div className='flex items-center justify-between gap-2'>
-                      <TabsList>
-                        <TabsTrigger value='generate'>Generate</TabsTrigger>
-                        <TabsTrigger value='fix'>Fix</TabsTrigger>
+                      <TabsList className='flex w-full bg-muted/50 p-1 rounded-lg items-center'>
+                        <TabsTrigger
+                          value='generate'
+                          className='cursor-pointer flex flex-1 items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-all data-[state=active]:bg-slate-600! data-[state=active]:text-white! data-[state=active]:shadow-sm'
+                        >
+                          <Sparkles className='h-4 w-4' />
+                          Generate
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value='fix'
+                          className='cursor-pointer flex flex-1 items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-all data-[state=active]:bg-slate-600! data-[state=active]:text-white! data-[state=active]:shadow-sm'
+                        >
+                          <Wrench className='h-4 w-4' />
+                          Fix
+                        </TabsTrigger>
                       </TabsList>
                     </div>
 
@@ -1034,7 +1078,7 @@ export default function Home() {
                           try {
                             if (open) {
                               ref.expand();
-                              ref.resize(isMobile ? 80 : 35);
+                              ref.resize(panelSizes.editor);
                             } else {
                               ref.collapse();
                             }
@@ -1050,7 +1094,7 @@ export default function Home() {
             <ResizableHandle withHandle />
 
             <ResizablePanel
-              defaultSize={editorCollapsed ? 100 : isMobile ? 20 : 62}
+              defaultSize={editorCollapsed ? 100 : panelSizes.diagram}
               minSize={isMobile ? 10 : 45}
             >
               <DiagramPreview
@@ -1075,7 +1119,7 @@ export default function Home() {
                   try {
                     if (willOpen) {
                       ref.expand();
-                      ref.resize(isMobile ? 80 : 35);
+                      ref.resize(panelSizes.editor);
                     } else {
                       ref.collapse();
                     }
