@@ -26,6 +26,7 @@ import {
   CirclePause,
   XIcon,
 } from 'lucide-react';
+import Image from 'next/image';
 import { nanoid } from 'nanoid';
 import {
   type ChangeEventHandler,
@@ -134,7 +135,7 @@ export function PromptInputAttachment({
       {...props}
     >
       {data.mediaType?.startsWith('image/') && data.url ? (
-        <img
+        <Image
           alt={data.filename || 'attachment'}
           className='size-full rounded-md object-cover'
           height={56}
@@ -585,6 +586,8 @@ export const PromptInput = forwardRef<PromptInputHandle, PromptInputProps>(
     );
   }
 );
+
+PromptInput.displayName = 'PromptInput';
 
 export type PromptInputBodyProps = HTMLAttributes<HTMLDivElement>;
 

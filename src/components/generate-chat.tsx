@@ -5,6 +5,8 @@ import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { upload } from '@vercel/blob/client';
 import { Copy, CheckCheck, Paperclip } from 'lucide-react';
+import NextImage from 'next/image';
+import type { UIMessage } from 'ai';
 import type { StickToBottomContext } from 'use-stick-to-bottom';
 import type { AgentActivityStep } from '@/components/diagram-editor';
 import type { FileUIPart } from 'ai';
@@ -30,7 +32,10 @@ import {
 } from '@/components/ai-elements/prompt-input';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import type { PromptInputHandle } from '@/components/ai-elements/prompt-input';
+import type {
+  PromptInputHandle,
+  PromptInputMessage,
+} from '@/components/ai-elements/prompt-input';
 
 type GenerateChatProps = {
   currentCode: string;
@@ -92,24 +97,6 @@ export function GenerateChat({
     toolName?: string;
   };
 
-  type AgentStream = {
-    steps: AgentActivityStep[];
-    message?: string;
-    finalCode?: string;
-    validated?: boolean;
-    stepsUsed?: number;
-    toolCallCount?: number;
-    usage?: AgentUsage;
-    status?: AgentStatus;
-  } | null;
-  const [agentStream, setAgentStream] = useState<AgentStream>(null);
-  const [agentStreamingState, setAgentStreamingState] = useState({
-    isLoading: false,
-    isStreaming: false,
-    abortController: null as AbortController | null,
-    runId: null as number | null,
-  });
-
   const normalizeDiagram = (raw: string): string => {
     // Strip code fences and leading/trailing whitespace
     const withoutFences = raw
@@ -159,7 +146,7 @@ export function GenerateChat({
 
   const { messages, status, stop, sendMessage } = useChat({
     transport,
-    onFinish: (options: any) => {
+    onFinish: (options: { message: UIMessage }) => {
       console.log('onFinish called with:', options);
 
       // With AI SDK v5 structured output, we should get structured data
@@ -191,11 +178,10 @@ export function GenerateChat({
       // Fallback: look for any text content if no structured output found
       if (!diagram) {
         const content =
-          typeof message?.content === 'string'
-            ? message.content
-            : Array.isArray(message?.content)
-            ? message.content.join('')
-            : '';
+          message.parts
+            ?.filter((part) => part.type === 'text')
+            ?.map((part) => (part as { text: string }).text)
+            ?.join('') || '';
 
         if (content) {
           try {
@@ -234,7 +220,7 @@ export function GenerateChat({
   }, [messages, status]);
 
   const handleSubmit = async (
-    message: { text?: string | null; files?: any[] },
+    message: PromptInputMessage,
     event: React.FormEvent<HTMLFormElement>
   ) => {
     event.preventDefault();
@@ -261,7 +247,9 @@ export function GenerateChat({
     const fileParts =
       hasFiles && message.files
         ? message.files.map((file) => {
-            const uploadState = fileUploadStates[file.id];
+            // Cast to include id property that PromptInput adds internally
+            const fileWithId = file as FileUIPart & { id: string };
+            const uploadState = fileUploadStates[fileWithId.id];
             return {
               type: 'file' as const,
               mediaType: file.mediaType,
@@ -463,13 +451,9 @@ export function GenerateChat({
               )}
 
               {messages
-                .filter((message: any) => {
+                .filter((message: UIMessage) => {
                   // For assistant messages, only show if they have actual content
                   if (message.role === 'assistant') {
-                    // Extract content to check if it exists
-                    let content = '';
-                    let diagram = '';
-
                     // Check message parts for content
                     if (message?.parts && Array.isArray(message.parts)) {
                       for (const part of message.parts) {
@@ -492,21 +476,25 @@ export function GenerateChat({
                     }
 
                     // Check regular content formats
-                    const anyMsg = message as any;
-                    if (
-                      typeof anyMsg.content === 'string' &&
-                      anyMsg.content.trim()
-                    ) {
+                    const msg = message as UIMessage & {
+                      content?: unknown;
+                      text?: string;
+                    };
+                    if (typeof msg.content === 'string' && msg.content.trim()) {
                       return true;
-                    } else if (Array.isArray(anyMsg.content)) {
-                      const hasContent = anyMsg.content.some((part: any) => {
+                    } else if (Array.isArray(msg.content)) {
+                      const hasContent = msg.content.some((part: unknown) => {
                         if (typeof part === 'string') return part.trim();
-                        if (part?.text) return part.text.trim();
-                        if (part?.content) return part.content.trim();
+                        const partObj = part as {
+                          text?: string;
+                          content?: string;
+                        };
+                        if (partObj?.text) return partObj.text.trim();
+                        if (partObj?.content) return partObj.content.trim();
                         return false;
                       });
                       if (hasContent) return true;
-                    } else if (anyMsg.text && anyMsg.text.trim()) {
+                    } else if (msg.text && msg.text.trim()) {
                       return true;
                     }
 
@@ -514,7 +502,7 @@ export function GenerateChat({
                   }
                   return true; // Show user messages
                 })
-                .map((message: any) => {
+                .map((message: UIMessage) => {
                   console.log('Message object:', message); // Debug log
 
                   // Extract content and handle structured output
@@ -548,22 +536,29 @@ export function GenerateChat({
 
                   // Fallback: extract from regular content formats
                   if (!content && !diagram) {
-                    const anyMsg = message as any;
-                    if (typeof anyMsg.content === 'string') {
-                      content = anyMsg.content;
-                    } else if (Array.isArray(anyMsg.content)) {
-                      content = anyMsg.content
-                        .map((part: any) => {
+                    const msg = message as UIMessage & {
+                      content?: unknown;
+                      text?: string;
+                    };
+                    if (typeof msg.content === 'string') {
+                      content = msg.content;
+                    } else if (Array.isArray(msg.content)) {
+                      content = msg.content
+                        .map((part: unknown) => {
                           if (typeof part === 'string') return part;
-                          if (part?.text) return part.text;
-                          if (part?.content) return part.content;
+                          const partObj = part as {
+                            text?: string;
+                            content?: string;
+                          };
+                          if (partObj?.text) return partObj.text;
+                          if (partObj?.content) return partObj.content;
                           return '';
                         })
                         .join('');
-                    } else if (anyMsg.text) {
-                      content = anyMsg.text;
+                    } else if (msg.text) {
+                      content = msg.text;
                     } else {
-                      content = String(anyMsg.content || anyMsg.text || '');
+                      content = String(msg.content || msg.text || '');
                     }
 
                     // Try to parse content as JSON if we haven't found structured data
@@ -596,7 +591,12 @@ export function GenerateChat({
                   const attachmentImages: string[] = [];
                   if (message?.parts && Array.isArray(message.parts)) {
                     for (const part of message.parts) {
-                      const p: any = part;
+                      const p = part as {
+                        type?: string;
+                        url?: string;
+                        mediaType?: string;
+                        image?: string | { data?: string; mimeType?: string };
+                      };
                       if (
                         p?.type === 'file' &&
                         typeof p?.url === 'string' &&
@@ -615,7 +615,7 @@ export function GenerateChat({
                         const mediaType: string | undefined =
                           typeof p.mediaType === 'string'
                             ? p.mediaType
-                            : typeof p.image?.mimeType === 'string'
+                            : typeof p.image === 'object' && p.image?.mimeType
                             ? p.image.mimeType
                             : undefined;
                         if (base64 && mediaType) {
@@ -637,10 +637,12 @@ export function GenerateChat({
                             {attachmentImages.length > 0 && (
                               <div className='mb-2 grid grid-cols-2 gap-2'>
                                 {attachmentImages.map((src, i) => (
-                                  <img
+                                  <NextImage
                                     key={i}
                                     src={src}
                                     alt='Attached image'
+                                    width={200}
+                                    height={160}
                                     className='max-h-40 w-auto rounded-md border object-contain'
                                   />
                                 ))}
