@@ -651,6 +651,7 @@ export function GenerateChat({
               uploadStates={fileUploadStates}
               placeholder='Upload an image or describe what you want'
               className='max-h-[120px] shadow-sm'
+              autoFocus
             />
           </div>
         </div>

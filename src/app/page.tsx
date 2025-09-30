@@ -37,6 +37,7 @@ import { importTextFile, exportTextFile } from '@/lib/file-utils';
 import { IoLogoGithub } from 'react-icons/io';
 import { Sparkles, Wrench } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 
 type AgentUsage = {
   totalTokens?: number;
@@ -1038,9 +1039,12 @@ export default function Home() {
                       </TabsList>
                     </div>
 
-                    <TabsContent
-                      value='generate'
-                      className='flex-1 min-h-0 mt-2'
+                    {/* Keep components mounted to preserve state */}
+                    <div
+                      className={cn(
+                        'flex-1 min-h-0 mt-2',
+                        activeTab === 'generate' ? 'block' : 'hidden'
+                      )}
                     >
                       <div className='h-full min-h-0'>
                         <GenerateChat
@@ -1056,9 +1060,14 @@ export default function Home() {
                           }}
                         />
                       </div>
-                    </TabsContent>
+                    </div>
 
-                    <TabsContent value='fix' className='flex-1 mt-2'>
+                    <div
+                      className={cn(
+                        'flex-1 mt-2',
+                        activeTab === 'fix' ? 'block' : 'hidden'
+                      )}
+                    >
                       <DiagramEditor
                         code={code}
                         onCodeChange={setCode}
@@ -1085,7 +1094,7 @@ export default function Home() {
                           } catch {}
                         }}
                       />
-                    </TabsContent>
+                    </div>
                   </Tabs>
                 </div>
               </div>
