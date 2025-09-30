@@ -6,7 +6,11 @@ import { useTheme } from 'next-themes';
 import { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import type { ImperativePanelHandle } from 'react-resizable-panels';
 import { ThemeToggle } from '@/components/theme-toggle';
-import { CodeEditor, type AgentActivityStep } from '@/components/code-editor';
+import {
+  DiagramEditor,
+  type AgentActivityStep,
+} from '@/components/diagram-editor';
+import { GenerateChat } from '@/components/generate-chat';
 import { DiagramPreview } from '@/components/diagram-preview';
 import {
   ResizableHandle,
@@ -14,6 +18,7 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SidebarProvider } from '@/components/ui/sidebar';
 import { useDebounced } from '@/hooks/useDebounced';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -96,6 +101,8 @@ type AgentStreamState = {
   message?: string;
   finalCode?: string;
   validated?: boolean;
+  stepsUsed?: number;
+  toolCallCount?: number;
   usage?: AgentUsage;
   status?: AgentStatus;
 };
@@ -150,10 +157,9 @@ const explanationToDisplay = (
 export default function Home() {
   const [code, setCode] = useState<string>(DEFAULT_CODE);
   const [error, setError] = useState<string | null>(null);
-  const [agentResult, setAgentResult] = useState<AgentResultState | null>(null);
+  //const [agentResult, setAgentResult] = useState<AgentResultState | null>(null);
   const [editorCollapsed, setEditorCollapsed] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
-  const [hideAgentPanel, setHideAgentPanel] = useState(false);
   const { resolvedTheme } = useTheme();
   const [selectedMermaidTheme, setSelectedMermaidTheme] =
     useState<MermaidTheme>('default');
@@ -169,6 +175,8 @@ export default function Home() {
   });
   const runIdCounterRef = useRef(0);
   const activeRunIdRef = useRef<number | null>(null);
+  const lastStatusUpdateRef = useRef(0);
+  const debouncedStatusRef = useRef<AgentStatus | null>(null);
 
   const debouncedCode = useDebounced(code, 100);
   const isMobile = useIsMobile();
@@ -200,21 +208,17 @@ export default function Home() {
 
   // Custom streaming implementation using JSON mode API
   const [agentStreamingState, setAgentStreamingState] = useState<{
-    isLoading: boolean;
     isStreaming: boolean;
     abortController: AbortController | null;
     runId: number | null;
   }>({
-    isLoading: false,
     isStreaming: false,
     abortController: null,
     runId: null,
   });
 
   const [agentStream, setAgentStream] = useState<AgentStreamState | null>(null);
-  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
 
-  const agentLoading = agentStreamingState.isLoading;
   const isStreaming = agentStreamingState.isStreaming;
 
   const stopAgentStreaming = () => {
@@ -225,20 +229,18 @@ export default function Home() {
     activeRunIdRef.current = null;
 
     const stoppedStatus: AgentStatus = {
-      label: 'Agent stopped',
+      label: 'Agent Stopped',
       detail: 'Request cancelled',
       tone: 'error',
     };
 
     setAgentStreamingState((prev) => ({
       ...prev,
-      isLoading: false,
       isStreaming: false,
       abortController: null,
       runId: null,
     }));
 
-    setAgentStatus(stoppedStatus);
     setAgentStream((prev) => {
       const base = prev ?? { steps: [] };
       return {
@@ -428,9 +430,8 @@ export default function Home() {
     };
 
     try {
-      setAgentResult(null);
-      setHideAgentPanel(false);
       setAgentStream(null);
+      debouncedStatusRef.current = null;
 
       const parserError = error ?? 'Unknown validation error';
       const abortController = new AbortController();
@@ -440,13 +441,12 @@ export default function Home() {
       activeRunIdRef.current = runId;
 
       status = {
-        label: 'Analyzing diagram…',
+        label: 'Analyzing Diagram',
         detail: parserError,
         tone: 'progress',
       };
 
       setAgentStreamingState({
-        isLoading: true,
         isStreaming: true,
         abortController,
         runId,
@@ -455,17 +455,40 @@ export default function Home() {
       const emitStreamUpdate = () => {
         if (runId === null) return;
         if (activeRunIdRef.current !== runId) return;
+
+        const now = Date.now();
+
+        // Allow important terminal statuses to bypass debouncing
+        const isTerminalStatus =
+          status &&
+          (status.label === 'Finalizing' ||
+            status.label === 'Agent Error' ||
+            status.label === 'Diagram Fixed' ||
+            status.label === 'Agent Completed' ||
+            status.label === 'Agent Failed' ||
+            status.label === 'Agent Stopped');
+
+        // Debounce status updates to prevent rapid flickering
+        // Only update the debounced status if it's been at least 150ms since last update
+        // OR if it's a terminal status that should always be shown
+        if (
+          status &&
+          (now - lastStatusUpdateRef.current > 150 || isTerminalStatus)
+        ) {
+          debouncedStatusRef.current = status;
+          lastStatusUpdateRef.current = now;
+        }
+
         setAgentStream({
           steps,
           message,
           finalCode,
           validated,
+          stepsUsed: remoteStepCount,
+          toolCallCount: remoteToolCallCount,
           usage,
-          status,
+          status: debouncedStatusRef.current || undefined,
         });
-        if (status) {
-          setAgentStatus(status);
-        }
       };
 
       emitStreamUpdate();
@@ -546,7 +569,7 @@ export default function Home() {
             ];
             status = {
               label: `Running ${toolName}`,
-              detail: 'Validating proposed fix…',
+              detail: 'Validating Proposed Fix',
               tone: 'progress',
               toolName,
             };
@@ -594,13 +617,13 @@ export default function Home() {
 
             status = isValidated
               ? {
-                  label: 'Validation passed',
+                  label: 'Validation Passed',
                   detail: `${toolName} confirmed the fix.`,
                   tone: 'progress',
                   toolName,
                 }
               : {
-                  label: 'Validation failed',
+                  label: 'Validation Failed',
                   detail: validationError ?? `${toolName} reported an issue.`,
                   tone: 'error',
                   toolName,
@@ -623,7 +646,7 @@ export default function Home() {
               applyExplanation(explanationValue);
 
               status = {
-                label: 'Synthesizing fix…',
+                label: 'Synthesizing Fix',
                 detail: explanationToDisplay(explanation),
                 tone: 'progress',
               };
@@ -648,13 +671,13 @@ export default function Home() {
                 }
               } catch {
                 if (!message) {
-                  message = 'Synthesizing fix…';
+                  message = 'Synthesizing Fix';
                 }
               }
             }
 
             status = {
-              label: 'Drafting fix…',
+              label: 'Drafting Fix',
               detail: explanationToDisplay(explanation),
               tone: 'progress',
             };
@@ -666,7 +689,7 @@ export default function Home() {
               ? (usageCandidate as AgentUsage)
               : usage;
             status = {
-              label: 'Finalizing…',
+              label: 'Finalizing',
               detail:
                 typeof finishEvent.finishReason === 'string'
                   ? `Finish reason: ${finishEvent.finishReason}`
@@ -682,7 +705,7 @@ export default function Home() {
                 : 'Agent reported an error.';
             message = detail;
             status = {
-              label: 'Agent error',
+              label: 'Agent Error',
               detail,
               tone: 'error',
             };
@@ -760,12 +783,12 @@ export default function Home() {
 
             status = successEvent.success
               ? {
-                  label: validated ? 'Diagram fixed' : 'Agent completed',
+                  label: validated ? 'Diagram Fixed' : 'Agent Completed',
                   detail: explanationToDisplay(explanation) ?? finalMessage,
                   tone: validated ? 'success' : 'progress',
                 }
               : {
-                  label: 'Agent failed',
+                  label: 'Agent Failed',
                   detail: finalMessage,
                   tone: 'error',
                 };
@@ -776,19 +799,9 @@ export default function Home() {
             };
             steps = [...steps, summaryStep];
 
-            setAgentResult({
-              success: successEvent.success,
-              message: finalMessage,
-              finalCode,
-              stepsUsed: remoteStepCount,
-              toolCallCount: remoteToolCallCount,
-              steps,
-            });
-
             emitStreamUpdate();
             setAgentStreamingState((prev) => ({
               ...prev,
-              isLoading: false,
               isStreaming: false,
               abortController: null,
               runId: null,
@@ -809,7 +822,7 @@ export default function Home() {
         finalCode = finalCode ?? candidateFromTool;
 
         status = {
-          label: finalCode ? 'Diagram fixed (fallback)' : 'Agent completed',
+          label: finalCode ? 'Diagram Fixed (fallback)' : 'Agent Completed',
           detail: fallbackMessage,
           tone: finalCode ? 'progress' : 'error',
         };
@@ -820,33 +833,24 @@ export default function Home() {
         };
         steps = [...steps, summaryStep];
 
-        setAgentResult({
-          success: Boolean(finalCode),
-          message: fallbackMessage,
-          finalCode,
-          stepsUsed: remoteStepCount,
-          toolCallCount: remoteToolCallCount,
-          steps,
-        });
-
         setAgentStream({
           steps,
           message: fallbackMessage,
           finalCode,
           validated,
+          stepsUsed: remoteStepCount,
+          toolCallCount: remoteToolCallCount,
           usage,
           status,
         });
 
         setAgentStreamingState((prev) => ({
           ...prev,
-          isLoading: false,
           isStreaming: false,
           abortController: null,
           runId: null,
         }));
         activeRunIdRef.current = null;
-        setAgentStatus(status);
         return;
       }
     } catch (e) {
@@ -856,30 +860,24 @@ export default function Home() {
 
       const msg = e instanceof Error ? e.message : 'Agent error';
       status = {
-        label: 'Agent error',
+        label: 'Agent Error',
         detail: msg,
         tone: 'error',
       };
       message = msg;
-      setAgentStatus(status);
       setAgentStream({
         steps,
         message,
         finalCode,
         validated,
+        stepsUsed: remoteStepCount,
+        toolCallCount: remoteToolCallCount,
         usage,
         status,
       });
-      setAgentResult({
-        success: false,
-        message: msg,
-        toolCallCount: remoteToolCallCount,
-        stepsUsed: remoteStepCount,
-        steps,
-      });
+
       setAgentStreamingState((prev) => ({
         ...prev,
-        isLoading: false,
         isStreaming: false,
         abortController: null,
         runId: null,
@@ -895,11 +893,9 @@ export default function Home() {
   }
 
   function acceptAgentResult() {
-    const final = agentResult?.finalCode || agentStream?.finalCode;
+    const final = agentStream?.finalCode;
     if (!final) return;
     setCode(final);
-    setAgentResult(null);
-    setHideAgentPanel(true);
   }
 
   function getSvgElement(): SVGSVGElement | null {
@@ -974,63 +970,88 @@ export default function Home() {
         </header>
 
         {/* Main Content */}
-        <div className='flex-1 overflow-hidden'>
+        <div className='flex-1 min-h-0 overflow-hidden'>
           <ResizablePanelGroup direction='horizontal' className='h-full'>
-            {/* Code Editor Panel */}
             <ResizablePanel
               ref={editorPanelRef}
-              defaultSize={editorCollapsed ? 0 : isMobile ? 80 : 35}
-              minSize={isMobile ? 60 : 25}
+              defaultSize={editorCollapsed ? 0 : isMobile ? 80 : 38}
+              minSize={isMobile ? 60 : 30}
               maxSize={isMobile ? 90 : 50}
               className='min-w-0'
               collapsible
               collapsedSize={0}
             >
-              <div className='h-full border-r bg-card/30'>
-                <div className='h-full p-2'>
-                  <CodeEditor
-                    code={code}
-                    onCodeChange={setCode}
-                    onReset={() => setCode(DEFAULT_CODE)}
-                    onImport={onImportFile}
-                    agentResult={agentResult}
-                    agentStream={!hideAgentPanel ? agentStream : null}
-                    onAcceptAgentResult={acceptAgentResult}
-                    onDismissAgentResult={() => {
-                      setAgentResult(null);
-                      setHideAgentPanel(true);
-                    }}
-                    onStopAgent={stopAgentStreaming}
-                    agentLoading={agentLoading}
-                    agentStreaming={isStreaming}
-                    onFixWithAgent={handleFixWithAgent}
-                    agentStatus={agentStatus}
-                    diagramError={error}
-                    isCollapsed={editorCollapsed}
-                    onToggleCollapse={(open) => {
-                      setEditorCollapsed(!open);
-                      const ref = editorPanelRef.current;
-                      if (!ref) return;
-                      try {
-                        if (open) {
-                          ref.expand();
-                          ref.resize(isMobile ? 80 : 35);
-                        } else {
-                          ref.collapse();
-                        }
-                      } catch {}
-                    }}
-                  />
+              <div className='h-full min-h-0 border-r bg-card/30'>
+                <div className='h-full min-h-0 p-3 flex flex-col gap-3'>
+                  <Tabs
+                    defaultValue='generate'
+                    className='flex-1 min-h-0 flex flex-col'
+                  >
+                    <div className='flex items-center justify-between gap-2'>
+                      <TabsList>
+                        <TabsTrigger value='generate'>Generate</TabsTrigger>
+                        <TabsTrigger value='fix'>Fix</TabsTrigger>
+                      </TabsList>
+                    </div>
+
+                    <TabsContent
+                      value='generate'
+                      className='flex-1 min-h-0 mt-2'
+                    >
+                      <div className='h-full min-h-0'>
+                        <GenerateChat
+                          currentCode={code}
+                          onDiagramGenerated={(diagram, explanation) => {
+                            setCode(diagram);
+                          }}
+                          onApplyDiagram={(diagram) => {
+                            setCode(diagram);
+                          }}
+                          onDismissResult={() => {
+                            // Panel dismissal is now handled by GenerateChat internally
+                          }}
+                        />
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value='fix' className='flex-1 mt-2'>
+                      <DiagramEditor
+                        code={code}
+                        onCodeChange={setCode}
+                        onReset={() => setCode(DEFAULT_CODE)}
+                        onImport={onImportFile}
+                        agentStream={agentStream}
+                        onAcceptAgentResult={acceptAgentResult}
+                        onStopAgent={stopAgentStreaming}
+                        agentStreaming={isStreaming}
+                        onFixWithAgent={handleFixWithAgent}
+                        diagramError={error}
+                        isCollapsed={editorCollapsed}
+                        onToggleCollapse={(open) => {
+                          setEditorCollapsed(!open);
+                          const ref = editorPanelRef.current;
+                          if (!ref) return;
+                          try {
+                            if (open) {
+                              ref.expand();
+                              ref.resize(isMobile ? 80 : 35);
+                            } else {
+                              ref.collapse();
+                            }
+                          } catch {}
+                        }}
+                      />
+                    </TabsContent>
+                  </Tabs>
                 </div>
               </div>
             </ResizablePanel>
 
             <ResizableHandle withHandle />
 
-            {/* Preview Panel */}
             <ResizablePanel
-              defaultSize={editorCollapsed ? 100 : isMobile ? 20 : 70}
-              minSize={isMobile ? 10 : 50}
+              defaultSize={editorCollapsed ? 100 : isMobile ? 20 : 62}
+              minSize={isMobile ? 10 : 45}
             >
               <DiagramPreview
                 error={error}

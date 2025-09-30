@@ -17,6 +17,7 @@ This single document consolidates the system and agent architecture for the Merm
 ### UI Components
 
 - `CodeEditor`: Text editor with AI integration. Contains a vertical `ResizablePanelGroup` splitting Editor and Agent Result panels; both are collapsible and resizable.
+- `GenerateChat`: AI Elements powered chat surface for natural-language diagram creation. Lives in the new `Generate` tab and streams responses from `/api/generate` using `useChat`. It now embeds a shared `CodeEditor` below the conversation so AI-generated diagrams feed directly into an editable area, with the same agentic fix UI and tool-call activity.
 - `DiagramPreview`: Zoomable preview with export controls (PNG export via canvas).
 - `DiagramDownloadDialog`: Advanced export dialog.
 - Theme toggle and responsive layout components.
@@ -69,6 +70,14 @@ This single document consolidates the system and agent architecture for the Merm
   - Returns a consolidated JSON when completed (no UI event stream here)
 
 - `/api/workers-ai` — Cloudflare Workers AI integration
+- `/api/generate` — OpenAI diagram generator
+
+  - Method: POST
+  - Model: `openai('gpt-4.1')`
+  - Tools: `mermaidValidator`
+  - Streaming: NDJSON events with `text-delta`, `tool-call`, `tool-result`, `structured-output`, `finish`, and final payload
+  - Iteration control: `stopWhen: stepCountIs(5)`
+  - Output: Structured object containing `{ diagram, explanation }`, validated by Mermaid parser before emission
 
   - Methods: GET and POST
   - Models: `@cf/meta/llama-4-scout-17b-16e-instruct`, `@cf/meta/llama-3.3-70b-instruct-fp8-fast`
@@ -136,9 +145,11 @@ This single document consolidates the system and agent architecture for the Merm
 
 ## UI Integration Summary
 
-- Single "✨ Auto Fix" button in `CodeEditor` triggers `/api/agent`.
-- Live panel shows step-by-step tool calls and validation outcomes.
-- Users can Apply/Dismiss the agent’s final `fixedCode`.
+- The editor panel now exposes `Generate` and `Fix` tabs:
+  - **Generate** uses AI Elements conversation components and the `/api/generate` route to produce validated diagrams from prose prompts, streaming explanations and surfacing design notes. The shared `CodeEditor` is always available beneath the chat for editing generated code and running Auto Fix.
+  - **Fix** preserves the original workflow with Auto Fix, agent status, and validation history.
+- Live results show step-by-step tool calls and validation outcomes in both tabs through the shared `CodeEditor` agent panel, and generated diagrams can be applied directly from either tab.
+- Attachment handling in the Generate tab clears images from the input immediately after submission, ensuring attachments are scoped to single messages for multimodal generation.
 
 ## Future Enhancements
 
