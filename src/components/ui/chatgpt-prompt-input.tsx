@@ -455,7 +455,7 @@ export const PromptBox = React.forwardRef<
           return;
         }
         e.preventDefault();
-        handleSubmit(e as any);
+        handleSubmit();
       }
     };
     const handlePlusClick = () => {
@@ -552,8 +552,8 @@ export const PromptBox = React.forwardRef<
       : null;
     const ActiveToolIcon = activeTool?.icon;
 
-    const handleSubmit = (e: React.FormEvent) => {
-      e.preventDefault();
+    const handleSubmit = (e?: React.FormEvent) => {
+      e?.preventDefault();
       console.log(
         'PromptBox handleSubmit called, hasValue:',
         hasValue,

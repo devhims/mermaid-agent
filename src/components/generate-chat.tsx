@@ -211,7 +211,7 @@ export function GenerateChat({
 
     setInput('');
 
-    let fileParts: Array<{
+    const fileParts: Array<{
       type: 'file';
       mediaType: string;
       url: string;
